@@ -37,7 +37,8 @@ const HELP = `remota — スマホからAIコーディングエージェント�
 // Interfaces a phone can never reach: container and VM bridges.
 const VIRTUAL_IF = /^(docker|br-|veth|virbr|vnet|cni|flannel|cali|lxc|lxdbr|podman|vboxnet|vmnet|kube)/;
 
-// Addresses to offer the phone, most likely first: private LAN, then VPN (100.64/10), then others.
+// Addresses to offer the phone, most likely first: home/office LAN, VPN (100.64/10), then 172.16/12
+// (often container networks) and the rest.
 function lanAddresses() {
   const out = [];
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
@@ -46,7 +47,7 @@ function lanAddresses() {
       if (addr.family === 'IPv4' && !addr.internal && !addr.address.startsWith('169.254.')) out.push(addr.address);
     }
   }
-  const rank = (ip) => (/^(192\.168|10)\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 0 : /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip) ? 1 : 2);
+  const rank = (ip) => (/^(192\.168|10)\./.test(ip) ? 0 : /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip) ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3);
   return out.sort((a, b) => rank(a) - rank(b));
 }
 

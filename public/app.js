@@ -256,23 +256,64 @@ async function request(dev, path, opts = {}) {
   // A machine may answer on several addresses (home LAN, VPN…); try the others when one is unreachable
   // and remember the one that worked.
   const urls = [dev.url, ...(dev.alts || []).filter((u) => u !== dev.url)];
-  const tried = [];
-  for (let i = 0; ; i++) {
+  // While a machine is being added we don't know which address works yet: ask them all at once.
+  if (urls.length > 1 && !devices.get(dev.id) && (opts.method || 'GET').toUpperCase() === 'GET') {
+    const errors = [];
     try {
-      const data = await requestAt(dev, urls[i], path, opts);
-      if (i > 0 && devices.get(dev.id)) {
-        dev.url = urls[i];
-        devices.save();
+      const hit = await Promise.any(urls.map((u) => requestAt(dev, u, path, opts).then((data) => ({ u, data }), (e) => {
+        errors.push(`${new URL(u).host}: ${e.message}`);
+        throw e;
+      })));
+      dev.url = hit.u;
+      return hit.data;
+    } catch (agg) {
+      const real = (agg.errors || []).find((x) => x.status !== 0 || /鍵が登録時と一致/.test(x.message));
+      if (real) throw real;
+      throw new DeviceError(`${errors.join(' / ')}。機器と同じネットワーク（Wi-Fi や VPN）にいるか、機器で \`remota doctor\` を実行して確認してください。`, 0);
+    }
+  }
+  try {
+    return await requestAt(dev, urls[0], path, opts);
+  } catch (ex) {
+    if (ex.status !== 0 || urls.length === 1 || /鍵が登録時と一致/.test(ex.message)) throw ex;
+    // The usual address is unreachable (e.g. away from home): ask all the others at once and keep
+    // the first that answers. Only reads go out in parallel; writes must never be sent twice.
+    const method = (opts.method || 'GET').toUpperCase();
+    const errors = [`${new URL(urls[0]).host}: ${ex.message}`];
+    const attempt = (u) =>
+      requestAt(dev, u, path, opts).then(
+        (data) => ({ u, data }),
+        (e) => {
+          errors.push(`${new URL(u).host}: ${e.message}`);
+          throw e;
+        }
+      );
+    let hit = null;
+    if (method === 'GET') {
+      try {
+        hit = await Promise.any(urls.slice(1).map(attempt));
+      } catch (agg) {
+        const real = agg.errors.find((x) => x.status !== 0 || /鍵が登録時と一致/.test(x.message));
+        if (real) throw real;
       }
-      return data;
-    } catch (ex) {
-      if (ex.status !== 0 || /鍵が登録時と一致/.test(ex.message)) throw ex;
-      tried.push(`${new URL(urls[i]).host}: ${ex.message}`);
-      if (i === urls.length - 1) {
-        // Say which addresses were tried, so a firewall or wrong network is easy to spot.
-        throw new DeviceError(`${tried.join(' / ')}。機器と同じネットワークにいるか、機器で \`remota doctor\` を実行して確認してください。`, 0);
+    } else {
+      for (const u of urls.slice(1)) {
+        try {
+          hit = await attempt(u);
+          break;
+        } catch (e) {
+          if (e.status !== 0) throw e;
+        }
       }
     }
+    if (!hit) {
+      // Say which addresses were tried, so a firewall or wrong network is easy to spot.
+      throw new DeviceError(`${errors.join(' / ')}。機器と同じネットワーク（Wi-Fi や VPN）にいるか、機器で \`remota doctor\` を実行して確認してください。`, 0);
+    }
+    // Remember the address that answered (also while a machine is being added, before it is saved).
+    dev.url = hit.u;
+    if (devices.get(dev.id)) devices.save();
+    return hit.data;
   }
 }
 
