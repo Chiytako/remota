@@ -236,7 +236,8 @@ function normalizeDeviceUrl(raw) {
   // A machine's QR code points at its certificate setup page (http://host:7680/setup#…&https=7681);
   // the app talks to the HTTPS port named there.
   if (url.pathname === '/setup') {
-    return { url: `https://${url.hostname.includes(':') ? `[${url.hostname}]` : url.hostname}:${params.get('https') || Number(url.port || 80) + 1}`, token };
+    const https = `https://${url.hostname.includes(':') ? `[${url.hostname}]` : url.hostname}:${params.get('https') || Number(url.port || 80) + 1}`;
+    return { url: https, alts: [https], token, pin: params.get('k') || '' };
   }
   // An HTTPS page may not call plain-HTTP machines (mixed content); Remota serves HTTPS by default.
   if (location.protocol === 'https:' && url.protocol === 'http:') url.protocol = 'https:';
@@ -502,7 +503,9 @@ async function addDevice({ name, url, token }) {
   if (!name && target.name) name = target.name;
   if (!dev.token) throw new Error('アクセストークンを入力してください（`remota token` で表示されます）');
   // The app trusts a machine only by the key in its pairing QR code.
-  if (NATIVE && !dev.pin) throw new Error('機器で `remota url` を実行し、表示された QR コード（remota://pair…）を読み取ってください。');
+  if (NATIVE && !dev.pin) {
+    throw new Error('このリンクには機器の鍵の指紋が含まれていません。機器で `remota url` を実行し、表示された QR コードを「QRで追加」で読み取るか、「ペアリングリンク: remota://pair?…」の remota:// から始まる部分を貼り付けてください。');
+  }
   const info = await request(dev, 'info', { timeout: 8000 }).catch((ex) => {
     // In a browser, most first-time failures over HTTPS are a certificate the phone doesn't trust yet.
     if (!NATIVE && ex.status === 0 && dev.url.startsWith('https:')) {

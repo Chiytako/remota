@@ -58,7 +58,11 @@ function urls(config) {
   const token = encodeURIComponent(config.token);
   if (builtinTls(config) && config.httpPort !== false) {
     const httpPort = config.httpPort || config.port - 1;
-    return hosts(config).map((h) => `http://${h}:${httpPort}/setup#token=${token}&https=${config.port}`);
+    // The key pin rides along too, so pasting this link into the Android app also works.
+    const tls = require('../src/tls');
+    tls.serverCredentials(config.tlsNames);
+    const pin = encodeURIComponent(tls.serverKeyPin());
+    return hosts(config).map((h) => `http://${h}:${httpPort}/setup#token=${token}&https=${config.port}&k=${pin}`);
   }
   const scheme = config.https === false && !(config.tls && config.tls.cert) ? 'http' : 'https';
   return hosts(config).map((h) => `${scheme}://${h}:${config.port}/#token=${token}`);
