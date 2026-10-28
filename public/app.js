@@ -182,6 +182,29 @@ function trackViewport() {
   update();
 }
 
+// Agents print a lot of dim grey text; on a small, bright-lit phone screen it needs a contrast boost.
+function readabilityOptions() {
+  return {
+    minimumContrastRatio: Number(prefs.get('contrast', highContrastDefault() ? 7 : 4.5)),
+    lineHeight: Number(prefs.get('lineHeight', 1.15)),
+    fontWeight: prefs.get('boldText', false) ? '500' : 'normal',
+    fontWeightBold: prefs.get('boldText', false) ? '800' : 'bold',
+  };
+}
+
+function highContrastDefault() {
+  return window.matchMedia && matchMedia('(prefers-contrast: more)').matches;
+}
+
+function applyReadability() {
+  document.documentElement.style.setProperty('--ui-scale', prefs.get('uiScale', 1));
+  document.documentElement.dataset.contrast = Number(prefs.get('contrast', highContrastDefault() ? 7 : 4.5)) >= 7 ? 'high' : 'normal';
+  if (term.instance) {
+    Object.assign(term.instance.options, readabilityOptions());
+    term.fitSoon();
+  }
+}
+
 function applyTheme() {
   const name = prefs.get('theme', 'midnight');
   document.documentElement.dataset.theme = name;
@@ -393,6 +416,7 @@ const term = {
       allowProposedApi: true,
       macOptionIsMeta: true,
       theme: THEMES[prefs.get('theme', 'midnight')] || THEMES.midnight,
+      ...readabilityOptions(),
     });
     this.fit = new FitAddon.FitAddon();
     t.loadAddon(this.fit);
@@ -647,8 +671,15 @@ const term = {
   },
 };
 
+const PILL_LABEL = { ...STATUS_LABEL, offline: '再接続中' };
+
+// The status is shown three ways (dot, labelled pill, coloured edge) so it reads at a glance.
 function setStatus(status) {
   $('#term-status').className = `status-dot ${status}`;
+  const pill = $('#term-pill');
+  pill.className = `status-pill ${status}`;
+  pill.textContent = PILL_LABEL[status] || status;
+  $('#view-term').dataset.status = status;
   if (status === 'waiting') scheduleChoiceScan();
 }
 
@@ -691,16 +722,23 @@ function findChoices(lines) {
 
   const found = [];
   let gap = 0;
+  // Lines between two options are the upper option's label wrapped onto the next row.
+  let wrapped = [];
+  const clean = (l) => l.replace(/[│┃|]/g, ' ').replace(/\s+/g, ' ').trim();
   for (let i = last; i >= Math.max(0, last - 18); i--) {
     const m = lines[i].match(OPTION_RE);
     if (m) {
       const num = Number(m[2]);
       if (found.length && num !== found[0].num - 1) break;
-      found.unshift({ num, label: m[3].trim(), selected: Boolean(m[1]), row: i });
+      const label = [clean(m[3]), ...(found.length ? wrapped : [])].join(' ');
+      found.unshift({ num, label, selected: Boolean(m[1]), row: i });
       gap = 0;
+      wrapped = [];
       if (num === 1) break;
     } else if (found.length && ++gap > 2) {
       break;
+    } else if (found.length) {
+      if (clean(lines[i])) wrapped.unshift(clean(lines[i]));
     } else if (!found.length && lines.slice(i, last + 1).filter((l) => l.trim()).length > 3) {
       // The menu must sit near the bottom of the screen.
       return null;
@@ -755,7 +793,7 @@ function scanChoices() {
   }
   const esc = document.createElement('button');
   esc.type = 'button';
-  esc.className = 'choice no';
+  esc.className = 'choice esc';
   esc.innerHTML = '<span class="num">Esc</span><span class="label">キャンセル</span>';
   esc.addEventListener('pointerdown', (e) => e.preventDefault());
   esc.addEventListener('click', () => term.send('\x1b'));
@@ -1316,6 +1354,10 @@ for (const dlg of document.querySelectorAll('dialog.sheet')) {
 
 function openSettings() {
   $('#set-theme').value = prefs.get('theme', 'midnight');
+  $('#set-contrast').value = String(prefs.get('contrast', highContrastDefault() ? 7 : 4.5));
+  $('#set-line-height').value = String(prefs.get('lineHeight', 1.15));
+  $('#set-ui-scale').value = String(prefs.get('uiScale', 1));
+  $('#set-bold').checked = prefs.get('boldText', false);
   $('#set-lang').value = prefs.get('lang', 'ja-JP');
   $('#set-enter-send').checked = prefs.get('enterSends', true);
   $('#set-auto-enter').checked = prefs.get('autoEnter', true);
@@ -1328,6 +1370,16 @@ function openSettings() {
 $('#set-theme').addEventListener('change', (e) => {
   prefs.set('theme', e.target.value);
   applyTheme();
+});
+for (const [id, key] of [['#set-contrast', 'contrast'], ['#set-line-height', 'lineHeight'], ['#set-ui-scale', 'uiScale']]) {
+  $(id).addEventListener('change', (e) => {
+    prefs.set(key, Number(e.target.value));
+    applyReadability();
+  });
+}
+$('#set-bold').addEventListener('change', (e) => {
+  prefs.set('boldText', e.target.checked);
+  applyReadability();
 });
 $('#set-lang').addEventListener('change', (e) => prefs.set('lang', e.target.value));
 $('#set-enter-send').addEventListener('change', (e) => prefs.set('enterSends', e.target.checked));
@@ -1452,6 +1504,7 @@ if ('serviceWorker' in navigator) {
 }
 
 applyTheme();
+applyReadability();
 renderKeybar();
 renderSnippets();
 trackViewport();

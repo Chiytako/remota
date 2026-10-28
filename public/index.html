@@ -79,6 +79,7 @@
         <strong id="term-name"></strong>
         <svg class="ico tiny"><use href="#i-down"/></svg>
       </button>
+      <span id="term-pill" class="status-pill" aria-live="polite"></span>
       <span id="term-latency" class="latency"></span>
       <button class="icon-btn" id="btn-term-menu" aria-label="メニュー"><svg class="ico"><use href="#i-more"/></svg></button>
     </header>
@@ -226,6 +227,36 @@
           <option value="light">Light</option>
         </select>
       </label>
+      <h3 class="setting-head">見やすさ</h3>
+      <label class="setting">
+        <div><strong>コントラスト補正</strong><p class="muted small">エージェントの薄いグレー文字を読みやすく補正</p></div>
+        <select id="set-contrast">
+          <option value="1">オフ</option>
+          <option value="4.5">標準</option>
+          <option value="7">高</option>
+        </select>
+      </label>
+      <label class="setting">
+        <div><strong>行間</strong></div>
+        <select id="set-line-height">
+          <option value="1">詰める</option>
+          <option value="1.15">標準</option>
+          <option value="1.3">広い</option>
+        </select>
+      </label>
+      <label class="setting">
+        <div><strong>ボタン・メニューの文字</strong><p class="muted small">ターミナルの文字はピンチで調整</p></div>
+        <select id="set-ui-scale">
+          <option value="1">標準</option>
+          <option value="1.12">大</option>
+          <option value="1.25">特大</option>
+        </select>
+      </label>
+      <label class="setting">
+        <div><strong>文字を太く</strong></div>
+        <input type="checkbox" id="set-bold">
+      </label>
+      <h3 class="setting-head">入力</h3>
       <label class="setting">
         <div><strong>音声入力の言語</strong></div>
         <select id="set-lang">
