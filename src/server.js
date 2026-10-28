@@ -10,6 +10,7 @@ const { WebSocketServer } = require('ws');
 const { CONFIG_DIR } = require('./config');
 const { Notifier } = require('./notify');
 const { SessionManager } = require('./sessions');
+const { NodeRegistry } = require('./nodes');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MODULES_DIR = path.join(__dirname, '..', 'node_modules');
@@ -59,6 +60,9 @@ function createServer(config) {
   const notifier = new Notifier(config);
   const sessions = new SessionManager(config, notifier);
   sessions.restore();
+  const nodes = new NodeRegistry(config, notifier, sessions);
+  nodes.start();
+  const localInfo = () => ({ hostname: os.hostname(), user: os.userInfo().username });
   const failures = new Map();
 
   function isAuthed(req) {
@@ -163,6 +167,43 @@ function createServer(config) {
       });
     }
     if (route === 'GET /api/sessions') return send(res, 200, sessions.list());
+
+    // ----- multiple devices (this server acting as the hub) -----
+    if (route === 'GET /api/overview') return send(res, 200, nodes.overview(localInfo()));
+    if (route === 'GET /api/nodes') return send(res, 200, nodes.overview(localInfo()).nodes);
+    if (route === 'POST /api/nodes') {
+      try {
+        return send(res, 201, await nodes.add(await readJsonBody(req)));
+      } catch (err) {
+        return send(res, 400, { error: err.message });
+      }
+    }
+    const nm = url.pathname.match(/^\/api\/nodes\/([0-9a-z]+)$/);
+    if (nm) {
+      if (nm[1] === 'local') {
+        if (req.method !== 'PATCH') return send(res, 400, { error: 'この機器は削除できません' });
+        const { name } = await readJsonBody(req);
+        config.localName = String(name || '').trim().slice(0, 40);
+        require('./config').save(config);
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === 'PATCH') {
+        try {
+          const updated = nodes.update(nm[1], await readJsonBody(req));
+          return updated ? send(res, 200, updated) : send(res, 404, { error: 'no such device' });
+        } catch (err) {
+          return send(res, 400, { error: err.message });
+        }
+      }
+      if (req.method === 'DELETE') return send(res, nodes.remove(nm[1]) ? 200 : 404, { ok: true });
+    }
+    // /api/n/<device>/<path> is relayed to that device's /api/<path>.
+    const pm = url.pathname.match(/^\/api\/n\/([0-9a-z]+)\/(.+)$/);
+    if (pm) {
+      const node = nodes.get(pm[1]);
+      if (!node) return send(res, 404, { error: 'no such device' });
+      return nodes.proxyHttp(node, req, res, `/api/${pm[2]}${url.search}`);
+    }
     if (route === 'POST /api/sessions') {
       const body = await readJsonBody(req);
       try {
@@ -243,6 +284,7 @@ function createServer(config) {
       const title = String(body.title || (session ? session.name : 'Remota')).slice(0, 120);
       const message = String(body.message || body.body || '完了しました').slice(0, 500);
       if (session && body.status) session.setStatus(body.status === 'waiting' ? 'waiting' : 'idle');
+      if (session) session.recordAlert(title, message);
       await notifier.send({ title, body: message, sessionId: session ? session.id : undefined });
       return send(res, 200, { ok: true });
     }
@@ -313,6 +355,14 @@ function createServer(config) {
   });
 
   wss.on('connection', (ws, url) => {
+    ws.isAlive = true;
+    ws.on('pong', () => (ws.isAlive = true));
+    const nodeId = url.searchParams.get('node');
+    if (nodeId && nodeId !== 'local') {
+      const node = nodes.get(nodeId);
+      if (!node) return ws.close(4404, 'no such device');
+      return nodes.proxyWs(node, ws, url.searchParams);
+    }
     const session = sessions.get(url.searchParams.get('session'));
     if (!session) {
       ws.send(JSON.stringify({ type: 'error', error: 'no such session' }));
@@ -329,8 +379,6 @@ function createServer(config) {
     let ackTimer = null;
     let lastAck = 0;
 
-    ws.isAlive = true;
-    ws.on('pong', () => (ws.isAlive = true));
     ws.on('message', (raw) => {
       let msg;
       try {
@@ -365,7 +413,10 @@ function createServer(config) {
       ws.ping();
     }
   }, 20000);
-  server.on('close', () => clearInterval(heartbeat));
+  server.on('close', () => {
+    clearInterval(heartbeat);
+    nodes.stop();
+  });
 
   return { server, sessions, notifier, useTls };
 }

@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE = 'remota-v3';
+const CACHE = 'remota-v4';
 const SHELL = ['/', '/style.css', '/app.js', '/vendor/xterm.js', '/vendor/xterm.css', '/vendor/addon-fit.js', '/vendor/addon-web-links.js', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -45,20 +45,21 @@ self.addEventListener('push', (event) => {
       renotify: true,
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
-      data: { sessionId: data.sessionId },
+      data: { sessionId: data.sessionId, node: data.node || 'local' },
     })
   );
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const id = event.notification.data && event.notification.data.sessionId;
-  const target = id ? `/#/s/${id}` : '/';
+  const data = event.notification.data || {};
+  const id = data.sessionId;
+  const target = id ? `/#/s/${data.node || 'local'}/${id}` : '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (const client of list) {
         if ('focus' in client) {
-          client.postMessage({ type: 'open', sessionId: id });
+          client.postMessage({ type: 'open', sessionId: id, node: data.node || 'local' });
           return client.focus();
         }
       }

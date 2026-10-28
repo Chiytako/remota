@@ -38,3 +38,7 @@ test('answered prompt followed by more output is no longer waiting', () => {
   const out = 'Do you want to proceed?\n❯ 1. Yes\n  2. No\n2\nPICKED=2\n$ echo hi\nhi\n$ ls\na b c\n$ ';
   assert.strictEqual(classify(out), null);
 });
+
+test('stripAnsi removes charset designations like ESC ( B', () => {
+  assert.strictEqual(stripAnsi('\x1b(B\x1b[mroot@vm:~#'), 'root@vm:~#');
+});

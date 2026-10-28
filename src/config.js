@@ -69,15 +69,24 @@ function loadConfig() {
   }
   if (dirty || !fs.existsSync(CONFIG_FILE)) save(config);
 
-  if (process.env.REMOTA_PORT) config.port = Number(process.env.REMOTA_PORT);
-  if (process.env.REMOTA_HOST) config.host = process.env.REMOTA_HOST;
-  if (process.env.REMOTA_TOKEN) config.token = process.env.REMOTA_TOKEN;
-  if (process.env.REMOTA_TMUX) config.tmux = process.env.REMOTA_TMUX;
+  // Environment overrides apply to this run only; remember the file's values so saving
+  // (e.g. after adding a device) never writes them into the config file.
+  const fileValues = {};
+  const override = (key, value) => {
+    if (value === undefined || value === '') return;
+    fileValues[key] = config[key];
+    config[key] = value;
+  };
+  override('port', process.env.REMOTA_PORT && Number(process.env.REMOTA_PORT));
+  override('host', process.env.REMOTA_HOST);
+  override('token', process.env.REMOTA_TOKEN);
+  override('tmux', process.env.REMOTA_TMUX);
+  Object.defineProperty(config, 'fileValues', { value: fileValues, enumerable: false });
   return config;
 }
 
 function save(config) {
-  writeJson(CONFIG_FILE, config);
+  writeJson(CONFIG_FILE, { ...config, ...(config.fileValues || {}) });
 }
 
 module.exports = { CONFIG_DIR, CONFIG_FILE, loadConfig, save, newToken, readJson, writeJson };

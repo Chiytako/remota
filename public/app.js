@@ -219,6 +219,8 @@ const state = {
   info: null,
   sessions: [],
   statuses: new Map(),
+  nodes: [],
+  newNode: 'local',
   pollTimer: null,
   presetIndex: 0,
 };
@@ -245,60 +247,113 @@ $('#login-form').addEventListener('submit', async (e) => {
   }
 });
 
-// ---------- home ----------
+// ---------- home: devices and their sessions ----------
 
-function sortedSessions() {
-  return [...state.sessions].sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || b.lastOutputAt - a.lastOutputAt);
+const keyOf = (node, id) => `${node}:${id}`;
+
+// API path for a device: the hub's own sessions are local, others are relayed through /api/n/<device>/.
+function nodeApi(node, path) {
+  return node && node !== 'local' ? `/api/n/${node}/${path}` : `/api/${path}`;
+}
+
+function nodeById(id) {
+  return state.nodes.find((n) => n.id === id);
+}
+
+function sortedSessions(list = state.sessions) {
+  return [...list].sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || b.lastOutputAt - a.lastOutputAt);
+}
+
+function sessionCard(s) {
+  const li = document.createElement('li');
+  li.className = `session-card ${s.status}${s.stale ? ' stale' : ''}`;
+  li.innerHTML = `
+    <span class="status-dot ${s.status}"></span>
+    <span class="name"></span>
+    <span class="badge ${s.status}">${STATUS_LABEL[s.status] || s.status}</span>
+    <span class="meta"></span>
+    ${s.preview ? '<span class="preview"></span>' : ''}`;
+  li.querySelector('.name').textContent = s.name;
+  li.querySelector('.meta').textContent = `${s.command || 'shell'} · ${s.cwd} · ${timeAgo(s.lastOutputAt)}`;
+  if (s.preview) li.querySelector('.preview').textContent = s.preview;
+  li.addEventListener('click', () => openSession(s.node, s.id));
+  return li;
 }
 
 function renderSessions() {
   const list = $('#session-list');
   list.replaceChildren();
-  $('#empty-state').hidden = state.sessions.length > 0;
-  for (const s of sortedSessions()) {
-    const li = document.createElement('li');
-    li.className = `session-card ${s.status}`;
-    li.innerHTML = `
-      <span class="status-dot ${s.status}"></span>
-      <span class="name"></span>
-      <span class="badge ${s.status}">${STATUS_LABEL[s.status] || s.status}</span>
-      <span class="meta"></span>
-      ${s.preview ? '<span class="preview"></span>' : ''}`;
-    li.querySelector('.name').textContent = s.name;
-    li.querySelector('.meta').textContent = `${s.command || 'shell'} · ${s.cwd} · ${timeAgo(s.lastOutputAt)}`;
-    if (s.preview) li.querySelector('.preview').textContent = s.preview;
-    li.addEventListener('click', () => openSession(s.id));
-    list.append(li);
+  const multi = state.nodes.length > 1;
+  $('#empty-state').hidden = state.sessions.length > 0 || multi;
+  $('#host-label').textContent = multi ? `${state.nodes.length}台の機器` : state.info ? `${state.info.user}@${state.info.hostname}` : '';
+
+  // One section per device, devices needing attention first.
+  const rank = (n) => {
+    const own = state.sessions.filter((s) => s.node === n.id);
+    return own.some((s) => s.status === 'waiting') ? 0 : !n.online ? 2 : own.length ? 1 : 3;
+  };
+  const nodes = [...state.nodes].sort((a, b) => rank(a) - rank(b) || (a.local ? -1 : b.local ? 1 : 0) || a.name.localeCompare(b.name));
+  for (const n of multi ? nodes : []) {
+    const own = sortedSessions(state.sessions.filter((s) => s.node === n.id));
+    const head = document.createElement('li');
+    head.className = `device-head${n.online ? '' : ' offline'}`;
+    const waiting = own.filter((s) => s.status === 'waiting').length;
+    head.innerHTML = `
+      <span class="device-dot"></span>
+      <span class="device-name"></span>
+      <span class="device-meta"></span>
+      <button class="icon-btn device-add" aria-label="この機器で新規セッション"><svg class="ico"><use href="#i-plus"/></svg></button>`;
+    head.querySelector('.device-name').textContent = n.name;
+    head.querySelector('.device-meta').textContent = !n.online
+      ? `オフライン${n.error ? `（${n.error}）` : ''}`
+      : `${own.length}セッション${waiting ? ` · 承認待ち${waiting}` : ''}${n.local ? ' · このサーバー' : ` · ${n.latency ?? '–'}ms`}`;
+    head.querySelector('.device-add').addEventListener('click', () => openNewDialog(n.id));
+    head.querySelector('.device-add').disabled = !n.online;
+    list.append(head);
+    for (const s of own) list.append(sessionCard(s));
+    if (!own.length && n.online) {
+      const empty = document.createElement('li');
+      empty.className = 'device-empty';
+      empty.textContent = 'セッションなし';
+      list.append(empty);
+    }
   }
+  if (!multi) for (const s of sortedSessions()) list.append(sessionCard(s));
 }
 
-function openSession(id) {
+function openSession(node, id) {
   haptic();
-  location.hash = `#/s/${id}`;
+  location.hash = `#/s/${node || 'local'}/${id}`;
 }
 
 async function refreshSessions() {
   try {
-    state.sessions = await api('/api/sessions');
+    const data = await api('/api/overview');
+    state.nodes = data.nodes;
+    state.sessions = data.sessions;
     $('#home-offline').hidden = true;
+    if (term.sessionId) updateDeviceLabel();
   } catch (ex) {
     if (ex.message !== 'unauthorized') $('#home-offline').hidden = false;
     return;
   }
   notifyTransitions();
   if (!$('#view-home').hidden) renderSessions();
+  if ($('#dlg-devices').open) renderDevices();
   updateBadges();
 }
 
 // In-app heads-up when another session starts waiting for approval.
 function notifyTransitions() {
   for (const s of state.sessions) {
-    const prev = state.statuses.get(s.id);
-    if (prev && prev !== 'waiting' && s.status === 'waiting' && s.id !== term.sessionId) {
+    const key = keyOf(s.node, s.id);
+    const prev = state.statuses.get(key);
+    if (prev && prev !== 'waiting' && s.status === 'waiting' && key !== term.key()) {
       haptic(30);
-      toast(`⏳ ${s.name} が承認待ちです（タップで開く）`, { ms: 6000, onClick: () => openSession(s.id) });
+      const where = state.nodes.length > 1 ? `${(nodeById(s.node) || {}).name} / ` : '';
+      toast(`⏳ ${where}${s.name} が承認待ちです（タップで開く）`, { ms: 6000, onClick: () => openSession(s.node, s.id) });
     }
-    state.statuses.set(s.id, s.status);
+    state.statuses.set(key, s.status);
   }
 }
 
@@ -306,7 +361,7 @@ function updateBadges() {
   const waiting = state.sessions.filter((s) => s.status === 'waiting');
   if ('setAppBadge' in navigator) (waiting.length ? navigator.setAppBadge(waiting.length) : navigator.clearAppBadge()).catch(() => {});
   document.title = waiting.length ? `(${waiting.length}) Remota` : 'Remota';
-  const others = waiting.filter((s) => s.id !== term.sessionId).length;
+  const others = waiting.filter((s) => keyOf(s.node, s.id) !== term.key()).length;
   $('#back-badge').hidden = !others;
   $('#back-badge').textContent = others;
 }
@@ -321,11 +376,44 @@ function stopPolling() {
   clearInterval(state.pollTimer);
 }
 
-$('#btn-new').addEventListener('click', openNewDialog);
+$('#btn-new').addEventListener('click', () => openNewDialog());
 $('#btn-settings').addEventListener('click', openSettings);
+$('#btn-devices').addEventListener('click', openDevices);
 
-function openNewDialog() {
-  const presets = (state.info && state.info.presets) || [{ name: 'Shell', command: '' }];
+// ----- new session -----
+
+async function openNewDialog(nodeId) {
+  const online = state.nodes.filter((n) => n.online);
+  const nodeChips = $('#node-list');
+  nodeChips.replaceChildren();
+  $('#node-field').hidden = state.nodes.length < 2;
+  const pickNode = async (id) => {
+    state.newNode = id;
+    nodeChips.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c.dataset.id === id));
+    prefs.set('lastNode', id);
+    await loadNodeDefaults(id);
+  };
+  for (const n of online) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.dataset.id = n.id;
+    b.textContent = n.name;
+    b.addEventListener('click', () => pickNode(n.id));
+    nodeChips.append(b);
+  }
+  $('#new-name').value = '';
+  $('#new-error').hidden = true;
+  $('#dlg-new').showModal();
+  const preferred = [nodeId, prefs.get('lastNode', 'local'), 'local'].find((id) => online.some((n) => n.id === id)) || (online[0] && online[0].id) || 'local';
+  await pickNode(preferred);
+}
+
+// Presets and the default directory come from the chosen device itself.
+async function loadNodeDefaults(id) {
+  let info = id === 'local' ? state.info : null;
+  if (!info) info = await api(nodeApi(id, 'info')).catch(() => null);
+  const presets = (info && info.presets) || [{ name: 'Shell', command: '' }];
   const chips = $('#preset-list');
   chips.replaceChildren();
   const pick = (i) => {
@@ -343,8 +431,8 @@ function openNewDialog() {
   });
   pick(Math.min(prefs.get('lastPreset', 1), presets.length - 1));
 
-  const history = prefs.get('cwdHistory', []);
-  $('#new-cwd').value = history[0] || (state.info && state.info.defaultCwd) || '';
+  const history = prefs.get(`cwdHistory.${id}`, id === 'local' ? prefs.get('cwdHistory', []) : []);
+  $('#new-cwd').value = history[0] || (info && info.defaultCwd) || '';
   const cwdChips = $('#cwd-chips');
   cwdChips.replaceChildren();
   for (const dir of history.slice(0, 6)) {
@@ -355,32 +443,98 @@ function openNewDialog() {
     b.addEventListener('click', () => ($('#new-cwd').value = dir));
     cwdChips.append(b);
   }
-  $('#new-name').value = '';
-  $('#new-error').hidden = true;
-  $('#dlg-new').showModal();
 }
 
 $('#new-form').addEventListener('submit', async (e) => {
   if (e.submitter && e.submitter.value === 'cancel') return;
   e.preventDefault();
   const cwd = $('#new-cwd').value.trim();
+  const node = state.newNode || 'local';
   try {
-    const s = await api('/api/sessions', {
+    const s = await api(nodeApi(node, 'sessions'), {
       method: 'POST',
       body: JSON.stringify({ name: $('#new-name').value, cwd, command: $('#new-command').value.trim() }),
     });
     prefs.set('lastPreset', state.presetIndex);
-    prefs.set('cwdHistory', [cwd, ...prefs.get('cwdHistory', []).filter((d) => d !== cwd)].slice(0, 10));
+    prefs.set(`cwdHistory.${node}`, [cwd, ...prefs.get(`cwdHistory.${node}`, []).filter((d) => d !== cwd)].slice(0, 10));
     $('#dlg-new').close();
-    state.sessions.push(s);
-    openSession(s.id);
+    state.sessions.push({ ...s, node });
+    openSession(node, s.id);
   } catch (ex) {
     $('#new-error').textContent = ex.message;
     $('#new-error').hidden = false;
   }
 });
 
+// ----- device management -----
+
+function openDevices() {
+  renderDevices();
+  $('#dev-error').hidden = true;
+  $('#dlg-devices').showModal();
+}
+
+function renderDevices() {
+  const list = $('#device-list');
+  list.replaceChildren();
+  for (const n of state.nodes) {
+    const li = document.createElement('li');
+    li.className = 'device-row';
+    li.innerHTML = `
+      <span class="device-dot ${n.online ? 'on' : 'off'}"></span>
+      <div class="device-info"><strong></strong><span class="muted small"></span></div>
+      <button type="button" class="btn small-btn" data-act="rename">名前</button>
+      ${n.local ? '' : '<button type="button" class="btn small-btn danger" data-act="remove">削除</button>'}`;
+    li.querySelector('strong').textContent = n.name;
+    li.querySelector('.muted').textContent = n.local
+      ? `このサーバー · ${n.user}@${n.hostname}`
+      : `${n.url} · ${n.online ? `${n.latency}ms` : `オフライン${n.error ? `: ${n.error}` : ''}`}`;
+    li.querySelector('[data-act="rename"]').addEventListener('click', async () => {
+      const name = prompt('機器の名前', n.name);
+      if (!name) return;
+      await api(`/api/nodes/${n.id}`, { method: 'PATCH', body: JSON.stringify({ name }) }).catch((ex) => toast(ex.message));
+      refreshSessions();
+    });
+    const rm = li.querySelector('[data-act="remove"]');
+    if (rm) {
+      rm.addEventListener('click', async () => {
+        if (!confirm(`「${n.name}」を登録から外しますか？（その機器のセッションは止まりません）`)) return;
+        await api(`/api/nodes/${n.id}`, { method: 'DELETE' }).catch((ex) => toast(ex.message));
+        refreshSessions();
+      });
+    }
+    list.append(li);
+  }
+}
+
+$('#dev-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('#dev-error');
+  err.hidden = true;
+  const btn = $('#dev-add');
+  btn.disabled = true;
+  btn.textContent = '接続を確認中…';
+  try {
+    const n = await api('/api/nodes', {
+      method: 'POST',
+      body: JSON.stringify({ name: $('#dev-name').value, url: $('#dev-url').value, token: $('#dev-token').value }),
+    });
+    $('#dev-name').value = '';
+    $('#dev-url').value = '';
+    $('#dev-token').value = '';
+    toast(`「${n.name}」を追加しました`);
+    await refreshSessions();
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '追加';
+  }
+});
+
 // ---------- terminal & connection ----------
+
 
 // Identifies this browser tab to the server so inputs re-sent after a reconnect are applied once.
 const CLIENT_ID = randomId();
@@ -390,6 +544,7 @@ const term = {
   fit: null,
   ws: null,
   sessionId: null,
+  node: 'local',
   retry: 0,
   retryTimer: null,
   pingTimer: null,
@@ -454,19 +609,25 @@ const term = {
     });
   },
 
-  open(id) {
+  key() {
+    return this.sessionId ? keyOf(this.node, this.sessionId) : null;
+  },
+
+  open(node, id) {
     this.ensure();
-    if (this.sessionId === id && this.ws && this.ws.readyState <= 1) return;
+    if (this.sessionId === id && this.node === node && this.ws && this.ws.readyState <= 1) return;
     this.close();
     this.sessionId = id;
+    this.node = node;
     this.retry = 0;
     this.epoch = null;
     this.seq = null;
     this.pending = [];
     this.instance.reset();
     hideChoices();
-    const s = state.sessions.find((x) => x.id === id);
+    const s = state.sessions.find((x) => x.id === id && x.node === node);
     $('#term-name').textContent = s ? s.name : '';
+    updateDeviceLabel();
     restoreDraft();
     this.connect();
   },
@@ -477,7 +638,7 @@ const term = {
     this.fitSoon();
     const { cols, rows } = this.instance;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const params = new URLSearchParams({ session: this.sessionId, cols, rows, client: CLIENT_ID });
+    const params = new URLSearchParams({ session: this.sessionId, node: this.node, cols, rows, client: CLIENT_ID });
     if (this.epoch && this.seq !== null) {
       params.set('epoch', this.epoch);
       params.set('since', this.seq);
@@ -674,6 +835,12 @@ const term = {
 const PILL_LABEL = { ...STATUS_LABEL, offline: '再接続中' };
 
 // The status is shown three ways (dot, labelled pill, coloured edge) so it reads at a glance.
+// With several devices, the header says which machine this terminal is on.
+function updateDeviceLabel() {
+  const n = state.nodes.length > 1 && nodeById(term.node);
+  $('#term-device').textContent = n ? n.name : '';
+}
+
 function setStatus(status) {
   $('#term-status').className = `status-dot ${status}`;
   const pill = $('#term-pill');
@@ -915,7 +1082,7 @@ function queueScroll(lines) {
     if (!n) return;
     term.scrolledBack = true;
     updateJumpButton();
-    await api(`/api/sessions/${term.sessionId}/scroll`, {
+    await api(nodeApi(term.node, `sessions/${term.sessionId}/scroll`), {
       method: 'POST',
       body: JSON.stringify({ direction: n < 0 ? 'up' : 'down', lines: Math.abs(n) }),
     }).catch(() => {});
@@ -931,7 +1098,7 @@ function pageScroll(direction) {
 function exitScrollback() {
   term.scrolledBack = false;
   updateJumpButton();
-  api(`/api/sessions/${term.sessionId}/scroll`, { method: 'POST', body: JSON.stringify({ direction: 'exit' }) }).catch(() => {});
+  api(nodeApi(term.node, `sessions/${term.sessionId}/scroll`), { method: 'POST', body: JSON.stringify({ direction: 'exit' }) }).catch(() => {});
 }
 
 function updateJumpButton() {
@@ -1050,12 +1217,12 @@ input.addEventListener('input', () => {
 // Unsent text survives app restarts and session switches.
 function saveDraft() {
   if (!term.sessionId) return;
-  if (input.value) prefs.set(`draft.${term.sessionId}`, input.value);
-  else prefs.remove(`draft.${term.sessionId}`);
+  if (input.value) prefs.set(`draft.${term.key()}`, input.value);
+  else prefs.remove(`draft.${term.key()}`);
 }
 
 function restoreDraft() {
-  input.value = prefs.get(`draft.${term.sessionId}`, '');
+  input.value = prefs.get(`draft.${term.key()}`, '');
   autosize();
 }
 
@@ -1185,7 +1352,7 @@ async function uploadFile(file) {
   if (!term.sessionId) return;
   toast(`アップロード中: ${file.name}`, { ms: 10000 });
   try {
-    const res = await api(`/api/upload?session=${term.sessionId}`, {
+    const res = await api(nodeApi(term.node, `upload?session=${term.sessionId}`), {
       method: 'POST',
       body: file,
       headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name || 'image.png') },
@@ -1210,12 +1377,19 @@ $('#btn-switch').addEventListener('click', async () => {
   list.replaceChildren();
   for (const s of sortedSessions()) {
     const li = document.createElement('li');
-    if (s.id === term.sessionId) li.className = 'current';
+    if (keyOf(s.node, s.id) === term.key()) li.className = 'current';
     li.innerHTML = `<span class="status-dot ${s.status}"></span><span class="name"></span><span class="badge ${s.status}">${STATUS_LABEL[s.status] || s.status}</span>`;
-    li.querySelector('.name').textContent = s.name;
+    const device = state.nodes.length > 1 && nodeById(s.node);
+    li.querySelector('.name').textContent = device ? `${s.name}` : s.name;
+    if (device) {
+      const tag = document.createElement('span');
+      tag.className = 'device-tag';
+      tag.textContent = device.name;
+      li.querySelector('.name').after(tag);
+    }
     li.addEventListener('click', () => {
       $('#dlg-switch').close();
-      openSession(s.id);
+      openSession(s.node, s.id);
     });
     list.append(li);
   }
@@ -1233,6 +1407,7 @@ $('#dlg-menu').addEventListener('close', async () => {
   const action = $('#dlg-menu').returnValue;
   $('#dlg-menu').returnValue = '';
   const id = term.sessionId;
+  const node = term.node;
   if (action === 'text') {
     openTextView();
   } else if (action === 'history') {
@@ -1251,13 +1426,13 @@ $('#dlg-menu').addEventListener('close', async () => {
   } else if (action === 'rename') {
     const name = prompt('新しい名前', $('#term-name').textContent);
     if (name) {
-      await api(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+      await api(nodeApi(node, `sessions/${id}`), { method: 'PATCH', body: JSON.stringify({ name }) });
       $('#term-name').textContent = name;
     }
   } else if (action === 'kill') {
     if (confirm('このセッションを終了しますか？実行中のプロセスも終了します。')) {
-      await api(`/api/sessions/${id}`, { method: 'DELETE' });
-      prefs.remove(`draft.${id}`);
+      await api(nodeApi(node, `sessions/${id}`), { method: 'DELETE' });
+      prefs.remove(`draft.${keyOf(node, id)}`);
       location.hash = '#/';
     }
   }
@@ -1267,7 +1442,7 @@ $('#dlg-menu').addEventListener('close', async () => {
 async function openTextView() {
   let text = null;
   try {
-    ({ text } = await api(`/api/sessions/${term.sessionId}/text?lines=3000`));
+    ({ text } = await api(nodeApi(term.node, `sessions/${term.sessionId}/text?lines=3000`)));
   } catch {
     // use the local buffer
   }
@@ -1453,10 +1628,11 @@ $('#btn-push-test').addEventListener('click', async () => {
 
 function route() {
   for (const dlg of document.querySelectorAll('dialog[open]')) dlg.close();
-  const m = location.hash.match(/^#\/s\/([0-9a-f]+)/);
+  // #/s/<device>/<session>; the older #/s/<session> form means this server.
+  const m = location.hash.match(/^#\/s\/(?:([0-9a-z]+)\/)?([0-9a-f]+)$/);
   if (m) {
     showView('term');
-    term.open(m[1]);
+    term.open(m[1] || 'local', m[2]);
     term.fitSoon();
     // Slower poll in the terminal: only for the back-button badge and heads-up toasts.
     startPolling(5000);
@@ -1480,7 +1656,6 @@ async function boot() {
     }
     return;
   }
-  $('#host-label').textContent = `${state.info.user}@${state.info.hostname}`;
   route();
 }
 
@@ -1499,7 +1674,7 @@ document.addEventListener('visibilitychange', () => {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data && e.data.type === 'open' && e.data.sessionId) openSession(e.data.sessionId);
+    if (e.data && e.data.type === 'open' && e.data.sessionId) openSession(e.data.node, e.data.sessionId);
   });
 }
 

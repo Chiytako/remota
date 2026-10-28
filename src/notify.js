@@ -29,8 +29,8 @@ class Notifier {
     writeJson(SUBS_FILE, this.subscriptions);
   }
 
-  async send({ title, body, sessionId, tag }) {
-    const payload = JSON.stringify({ title, body, sessionId, tag: tag || sessionId || 'remota' });
+  async send({ title, body, sessionId, node, tag }) {
+    const payload = JSON.stringify({ title, body, sessionId, node: node || 'local', tag: tag || (sessionId ? `${node || 'local'}:${sessionId}` : 'remota') });
     const gone = [];
     await Promise.all(
       this.subscriptions.map((sub) =>

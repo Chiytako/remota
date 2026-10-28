@@ -28,6 +28,7 @@
       <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
       <symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
       <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
     </defs>
   </svg>
@@ -53,6 +54,7 @@
         <strong>Remota</strong>
         <span id="host-label" class="muted small"></span>
       </div>
+      <button class="icon-btn" id="btn-devices" aria-label="機器の管理"><svg class="ico"><use href="#i-server"/></svg></button>
       <button class="icon-btn" id="btn-settings" aria-label="設定"><svg class="ico"><use href="#i-gear"/></svg></button>
     </header>
     <div id="home-offline" class="conn-banner" hidden>サーバーに接続できません — 再試行中…</div>
@@ -61,7 +63,7 @@
       <div id="empty-state" class="empty" hidden>
         <img src="/icons/icon.svg" alt="" width="64" height="64">
         <p>セッションがありません</p>
-        <p class="muted small">「新規セッション」から Claude Code や Codex を起動できます。<br>tmux 上で動くので、スマホを閉じても作業は続きます。</p>
+        <p class="muted small">「新規セッション」から Claude Code や Codex を起動できます。<br>tmux 上で動くので、スマホを閉じても作業は続きます。<br>右上の <svg class="ico tiny" style="opacity:1;vertical-align:-2px"><use href="#i-server"/></svg> から他の機器も追加できます。</p>
       </div>
     </main>
     <button class="fab" id="btn-new"><svg class="ico"><use href="#i-plus"/></svg>新規セッション</button>
@@ -76,7 +78,7 @@
       </button>
       <button class="bar-title switcher" id="btn-switch" aria-label="セッションを切り替え">
         <span class="status-dot" id="term-status"></span>
-        <strong id="term-name"></strong>
+        <span class="title-stack"><strong id="term-name"></strong><span id="term-device" class="term-device"></span></span>
         <svg class="ico tiny"><use href="#i-down"/></svg>
       </button>
       <span id="term-pill" class="status-pill" aria-live="polite"></span>
@@ -112,6 +114,9 @@
     <form method="dialog" id="new-form">
       <div class="grabber"></div>
       <h2>新規セッション</h2>
+      <label id="node-field">機器
+        <div id="node-list" class="chips"></div>
+      </label>
       <label>起動するもの
         <div id="preset-list" class="chips"></div>
       </label>
@@ -129,6 +134,26 @@
       <div class="sheet-actions">
         <button value="cancel" class="btn" formnovalidate>キャンセル</button>
         <button value="ok" class="btn primary" id="new-submit">起動</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-devices" class="sheet">
+    <form method="dialog">
+      <div class="grabber"></div>
+      <h2>機器の管理</h2>
+      <ul id="device-list" class="device-list"></ul>
+      <h3 class="setting-head">機器を追加</h3>
+      <p class="muted small">追加する機器でも Remota を起動し、その機器の URL と <code>remota token</code> で表示されるトークンを入力します。この画面のサーバーが中継するので、スマホからのログインと通知の設定は1回で済みます。</p>
+    </form>
+    <form id="dev-form" class="dev-form">
+      <input id="dev-name" placeholder="名前（例: 自宅Mac、GPUサーバー）" autocapitalize="off" autocorrect="off">
+      <input id="dev-url" placeholder="URL（例: http://192.168.1.20:7681）" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <input id="dev-token" type="password" placeholder="その機器のアクセストークン" required autocomplete="off">
+      <p id="dev-error" class="error" hidden></p>
+      <div class="sheet-actions">
+        <button type="button" class="btn" onclick="this.closest('dialog').close()">閉じる</button>
+        <button type="submit" class="btn primary" id="dev-add">追加</button>
       </div>
     </form>
   </dialog>
