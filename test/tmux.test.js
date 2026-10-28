@@ -69,6 +69,27 @@ test('attach to a tmux session the user started outside Remota, and leave it run
       pane = userTmux('capture-pane', '-p', '-t', '=my work:');
     }
     assert.match(pane, /FROM_PHONE_42/, 'typed text reaches the user\'s own tmux session');
+    // Scrolling: tmux history goes through copy-mode; a full-screen app with mouse support gets wheel events.
+    const scroll = async (direction, lines) => (await (await fetch(`${base}/api/sessions/${s.id}/scroll`, { method: 'POST', headers: H, body: JSON.stringify({ direction, lines }) })).json()).ok;
+    userTmux('send-keys', '-t', '=my work:', 'seq 1 200', 'Enter');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(await scroll('down', 5), 'bottom');
+    assert.strictEqual(await scroll('up', 20), 'copy');
+    assert.strictEqual(userTmux('display', '-p', '-t', '=my work:', '#{pane_in_mode}').trim(), '1');
+    assert.strictEqual(await scroll('exit'), 'exit');
+    userTmux('send-keys', '-t', '=my work:', 'clear; seq 1 500 | less --mouse', 'Enter');
+    let top = '';
+    for (let i = 0; i < 30 && top !== '1'; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      top = userTmux('capture-pane', '-p', '-t', '=my work:').split('\n')[0];
+    }
+    assert.strictEqual(await scroll('down', 30), 'app');
+    for (let i = 0; i < 30 && top === '1'; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      top = userTmux('capture-pane', '-p', '-t', '=my work:').split('\n')[0];
+    }
+    assert.notStrictEqual(top, '1', 'the full-screen app scrolled');
+    userTmux('send-keys', '-t', '=my work:', 'q');
     ws.close();
 
     // Attaching twice gives the same Remota session; it is listed as attached.

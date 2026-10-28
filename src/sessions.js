@@ -225,17 +225,39 @@ class Session extends EventEmitter {
   }
 
   // Scrolls tmux's history without the user having to know the copy-mode key bindings.
+  // Returns how it scrolled: 'copy' (tmux history), 'app' (a full-screen program such as opencode
+  // or vim, which keeps its own history: it gets mouse-wheel events), 'empty' (nothing to scroll
+  // back to), 'bottom' (already at the latest),
+  // 'fullscreen' (a full-screen program that takes no mouse input), 'exit', or false.
   scroll(direction, lines = 5) {
     if (!this.useTmux || this.exited) return false;
+    const pane = `${this.target}:`;
+    lines = Math.max(1, Math.min(200, lines | 0));
     try {
       if (direction === 'exit') {
-        this.tmux(['send-keys', '-t', `${this.target}:`, '-X', 'cancel']);
-        return true;
+        this.tmux(['send-keys', '-t', pane, '-X', 'cancel']);
+        return 'exit';
       }
-      this.tmux(['copy-mode', '-e', '-t', `${this.target}:`]);
-      const cmd = direction === 'up' ? 'scroll-up' : 'scroll-down';
-      this.tmux(['send-keys', '-t', `${this.target}:`, '-X', '-N', String(Math.max(1, Math.min(200, lines | 0))), cmd]);
-      return true;
+      const [inMode, alt, mouse, sgr, history, width, height] = this.tmux(['display-message', '-p', '-t', pane,
+        '#{pane_in_mode} #{alternate_on} #{mouse_any_flag} #{mouse_sgr_flag} #{history_size} #{pane_width} #{pane_height}']).trim().split(' ').map(Number);
+      if (!inMode && alt) {
+        if (!mouse) return 'fullscreen';
+        // Wheel events, the way a terminal reports them, aimed at the middle of the pane.
+        const button = direction === 'up' ? 64 : 65;
+        const x = Math.ceil(width / 2);
+        const y = Math.ceil(height / 2);
+        const one = sgr ? Buffer.from(`\x1b[<${button};${x};${y}M`) : Buffer.from([0x1b, 0x5b, 0x4d, 32 + button, 32 + Math.min(x, 223), 32 + Math.min(y, 223)]);
+        const steps = Math.min(40, Math.ceil(lines / 3));
+        const hex = [...Buffer.concat(Array(steps).fill(one))].map((c) => c.toString(16).padStart(2, '0'));
+        this.tmux(['send-keys', '-t', pane, '-H', ...hex]);
+        return 'app';
+      }
+      // Already at the latest output: scrolling down has nowhere to go.
+      if (!inMode && direction !== 'up') return 'bottom';
+      if (!inMode && !history) return 'empty';
+      this.tmux(['copy-mode', '-e', '-t', pane]);
+      this.tmux(['send-keys', '-t', pane, '-X', '-N', String(lines), direction === 'up' ? 'scroll-up' : 'scroll-down']);
+      return 'copy';
     } catch {
       return false;
     }

@@ -1714,12 +1714,18 @@ function queueScroll(lines) {
     scrollQueue = 0;
     scrollFlush = null;
     if (!n) return;
-    term.scrolledBack = true;
-    updateJumpButton();
-    await devApi(term.node, `sessions/${term.sessionId}/scroll`, {
+    const r = await devApi(term.node, `sessions/${term.sessionId}/scroll`, {
       method: 'POST',
       body: JSON.stringify({ direction: n < 0 ? 'up' : 'down', lines: Math.abs(n) }),
-    }).catch(() => {});
+    }).catch(() => null);
+    const mode = r && r.ok;
+    // Only tmux's own history view needs "back to the latest"; a full-screen app scrolls itself.
+    if (mode === 'copy' || mode === true) term.scrolledBack = true;
+    else if ((mode === 'empty' || mode === 'fullscreen') && n < 0 && Date.now() - (term.emptyHintAt || 0) > 5000) {
+      term.emptyHintAt = Date.now();
+      toast(mode === 'empty' ? 'これより前の履歴はありません' : '全画面表示のアプリが動いているため、スクロールできません');
+    }
+    updateJumpButton();
   }, 50);
 }
 
