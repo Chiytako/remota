@@ -24,9 +24,42 @@ function hasTmux() {
   }
 }
 
-// `socket` null means the user's own tmux server (the one plain `tmux` talks to).
+// `socket`: a name (tmux -L, like Remota's own), an absolute socket path (tmux -S, for servers the
+// user started), or null for tmux's default server.
+function socketArgs(socket) {
+  if (!socket) return [];
+  return socket.startsWith('/') ? ['-S', socket] : ['-L', socket];
+}
+
 function tmux(args, opts = {}, socket = TMUX_SOCKET) {
-  return execFileSync('tmux', [...(socket ? ['-L', socket] : []), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts });
+  return execFileSync('tmux', [...socketArgs(socket), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+}
+
+// Every tmux server this user runs: tmux keeps its sockets in <dir>/tmux-<uid>/, where <dir> is
+// TMUX_TMPDIR or /tmp (some setups use XDG_RUNTIME_DIR). Named servers (tmux -L work) are there too.
+function userTmuxSockets() {
+  const uid = process.getuid ? process.getuid() : 0;
+  const dirs = [...new Set([process.env.TMUX_TMPDIR, '/tmp', process.env.XDG_RUNTIME_DIR, `/run/user/${uid}`].filter(Boolean))];
+  const found = [];
+  for (const dir of dirs) {
+    const base = path.join(dir, `tmux-${uid}`);
+    let names = [];
+    try {
+      names = fs.readdirSync(base);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const full = path.join(base, name);
+      if (name === TMUX_SOCKET) continue;
+      try {
+        if (fs.statSync(full).isSocket() && !found.includes(fs.realpathSync(full))) found.push(fs.realpathSync(full));
+      } catch {
+        // vanished
+      }
+    }
+  }
+  return found;
 }
 
 function liveTmuxSessions(socket = TMUX_SOCKET) {
@@ -52,8 +85,10 @@ class Session extends EventEmitter {
     this.name = meta.name;
     this.cwd = meta.cwd;
     this.command = meta.command || '';
-    // Name of a tmux session the user started themselves (outside Remota), or null for Remota's own.
+    // Name of a tmux session the user started themselves (outside Remota), or null for Remota's own,
+    // and the socket of the tmux server it lives on (null: tmux's default server).
     this.external = meta.external || null;
+    this.externalSocket = meta.externalSocket || null;
     this.createdAt = meta.createdAt || Date.now();
     this.useTmux = manager.useTmux;
     this.buffer = '';
@@ -82,7 +117,7 @@ class Session extends EventEmitter {
 
   // The user's own sessions live on their default tmux server; Remota's on its private socket.
   get socket() {
-    return this.external ? null : TMUX_SOCKET;
+    return this.external ? this.externalSocket : TMUX_SOCKET;
   }
 
   // "=name" matches the session name exactly (a bare name could match by prefix).
@@ -109,7 +144,7 @@ class Session extends EventEmitter {
         if (this.command) tmux(['send-keys', '-t', this.tmuxName, this.command, 'Enter']);
       }
       file = 'tmux';
-      args = [...(this.socket ? ['-L', this.socket] : []), '-u', 'attach-session', '-t', this.target];
+      args = [...socketArgs(this.socket), '-u', 'attach-session', '-t', this.target];
     } else {
       file = this.manager.config.shell;
       args = ['-l'];
@@ -277,12 +312,13 @@ class Session extends EventEmitter {
       clients: this.clients.size,
       tmux: this.useTmux,
       external: this.external,
+      externalSocket: this.externalSocket,
       preview: lastLines(this.buffer.slice(-4000), 2),
     };
   }
 
   meta() {
-    return { id: this.id, name: this.name, cwd: this.cwd, command: this.command, createdAt: this.createdAt, external: this.external };
+    return { id: this.id, name: this.name, cwd: this.cwd, command: this.command, createdAt: this.createdAt, external: this.external, externalSocket: this.externalSocket };
   }
 }
 
@@ -300,9 +336,8 @@ class SessionManager extends EventEmitter {
   restore() {
     if (!this.useTmux) return;
     const live = liveTmuxSessions();
-    const userLive = liveTmuxSessions(null);
     for (const meta of readJson(SESSIONS_FILE, [])) {
-      if (meta.external ? !userLive.has(meta.external) : !live.has(TMUX_PREFIX + meta.id)) continue;
+      if (meta.external ? !liveTmuxSessions(meta.externalSocket || null).has(meta.external) : !live.has(TMUX_PREFIX + meta.id)) continue;
       const session = new Session(this, meta);
       session.start({ attachExisting: true });
       this.sessions.set(session.id, session);
@@ -314,27 +349,46 @@ class SessionManager extends EventEmitter {
     return [...this.sessions.values()].sort((a, b) => a.createdAt - b.createdAt).map((s) => s.toJSON());
   }
 
-  // tmux sessions the user started themselves (plain `tmux`), which Remota can attach to.
+  // tmux sessions the user started themselves (outside Remota), on every tmux server they run.
   listUserTmux() {
-    if (!this.useTmux) return { available: false, sessions: [] };
-    let out = '';
-    try {
-      // tmux rewrites tabs and control characters in its output, so fields are split on a marker.
-      out = tmux(['list-sessions', '-F', ['#{session_name}', '#{session_windows}', '#{session_attached}', '#{session_activity}', '#{pane_current_path}', '#{pane_current_command}'].join(FIELD)], {}, null);
-    } catch {
-      // no tmux server running for this user
+    if (!this.useTmux) return { available: false, sessions: [], errors: [] };
+    const attached = new Map([...this.sessions.values()].filter((x) => x.external).map((x) => [`${x.externalSocket}\n${x.external}`, x.id]));
+    const sessions = [];
+    const errors = [];
+    const fmt = ['#{session_name}', '#{session_windows}', '#{session_attached}', '#{session_activity}', '#{pane_current_path}', '#{pane_current_command}'].join(FIELD);
+    for (const socket of userTmuxSockets()) {
+      let out = '';
+      try {
+        // tmux rewrites tabs and control characters in its output, so fields are split on a marker.
+        out = tmux(['list-sessions', '-F', fmt], {}, socket);
+      } catch (err) {
+        const msg = String(err.stderr || err.message).trim();
+        // A server with no sessions left, or a stale socket file, is not an error worth showing.
+        if (!/no server running|error connecting|no sessions/i.test(msg)) errors.push(`${path.basename(socket)}: ${msg}`);
+        continue;
+      }
+      for (const line of out.split('\n').filter(Boolean)) {
+        const [name, windows, clients, activity, cwd, command] = line.split(FIELD);
+        sessions.push({
+          name,
+          socket,
+          server: path.basename(socket),
+          windows: Number(windows),
+          clients: Number(clients),
+          activity: Number(activity) * 1000,
+          cwd,
+          command,
+          remotaId: attached.get(`${socket}\n${name}`) || null,
+        });
+      }
     }
-    const attached = new Map([...this.sessions.values()].filter((s) => s.external).map((s) => [s.external, s.id]));
-    const sessions = out.split('\n').filter(Boolean).map((line) => {
-      const [name, windows, clients, activity, cwd, command] = line.split(FIELD);
-      return { name, windows: Number(windows), clients: Number(clients), activity: Number(activity) * 1000, cwd, command, remotaId: attached.get(name) || null };
-    });
-    return { available: true, sessions };
+    sessions.sort((x, y) => y.activity - x.activity);
+    return { available: true, sessions, errors };
   }
 
-  attachUserTmux(name) {
+  attachUserTmux(name, socket) {
     name = String(name || '');
-    const found = this.listUserTmux().sessions.find((x) => x.name === name);
+    const found = this.listUserTmux().sessions.find((x) => x.name === name && (!socket || x.socket === socket));
     if (!found) throw new Error(`tmux セッション「${name}」が見つかりません`);
     if (found.remotaId) return this.get(found.remotaId);
     const session = new Session(this, {
@@ -343,6 +397,7 @@ class SessionManager extends EventEmitter {
       cwd: found.cwd || require('os').homedir(),
       command: found.command === 'bash' || found.command === 'zsh' || found.command === 'fish' ? '' : found.command,
       external: name,
+      externalSocket: found.socket,
     });
     session.start({ attachExisting: true });
     this.sessions.set(session.id, session);

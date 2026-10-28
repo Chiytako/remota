@@ -285,6 +285,21 @@ async function doctor(config) {
   const skipped = Object.keys(os.networkInterfaces()).filter((n) => VIRTUAL_IF.test(n));
   if (skipped.length) console.log(`  - 仮想ネットワークは除外: ${skipped.join(', ')}`);
 
+  // 3b) tmux sessions started outside Remota: what the shell sees vs. what Remota can list.
+  if (!sh('tmux', ['-V'])) ng('tmux が見つかりません', 'tmux をインストールすると、既存の tmux セッションにも接続できます');
+  else {
+    const { SessionManager } = require('../src/sessions');
+    const seen = new SessionManager(config).listUserTmux();
+    const mine = (sh('tmux', ['ls', '-F', '#{session_name}']) || '').split('\n').filter(Boolean);
+    const names = seen.sessions.map((t) => (t.server === 'default' ? t.name : `${t.name}（-L ${t.server}）`));
+    if (names.length) ok(`接続できる tmux セッション: ${names.join(', ')}`);
+    else console.log('  - 実行中の tmux セッションはありません');
+    const missing = mine.filter((n) => !seen.sessions.some((t) => t.name === n));
+    if (missing.length) ng(`tmux ls には出るのに Remota から見えないセッション: ${missing.join(', ')}`, `TMUX_TMPDIR=${process.env.TMUX_TMPDIR || '(未設定)'}。このシェルで node bin/remota.js service install をやり直してください`);
+    for (const e of seen.errors) ng(`tmux: ${e}`);
+    if (svc === 'active' && mine.length && !names.length) ng('サービス側から tmux が見えない可能性があります', 'node bin/remota.js service install を再実行し、service restart してください');
+  }
+
   // 4) Firewalls that drop incoming connections (the usual cause of "応答がありません").
   const active = (unit) => sh('systemctl', ['is-active', unit]) === 'active';
   const ports = `${config.port}${builtinTls(config) && config.httpPort !== false ? `, ${config.httpPort || config.port - 1}` : ''}`;

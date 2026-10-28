@@ -685,7 +685,9 @@ function renderSessions() {
     head.querySelector('.device-add').disabled = n.online === false;
     list.append(head);
     for (const s of own) list.append(sessionCard(s));
-    if (!own.length && n.online) {
+    const tmuxRows = userTmuxRows(n.id);
+    list.append(...tmuxRows);
+    if (!own.length && !tmuxRows.length && n.online) {
       const empty = document.createElement('li');
       empty.className = 'device-empty';
       empty.textContent = 'セッションなし';
@@ -693,6 +695,8 @@ function renderSessions() {
     }
   }
   if (!multi) for (const s of sortedSessions()) list.append(sessionCard(s));
+  if (!multi && only) list.append(...userTmuxRows(only.id));
+  if (!multi && only) $('#empty-state').hidden = list.children.length > 0;
   renderQuick();
   renderWaitingBanner();
 }
@@ -726,6 +730,10 @@ async function pollDevice(dev) {
     if (!live.info || Date.now() - (live.infoAt || 0) > 60000) {
       live.info = await request(dev, 'info', { timeout: 6000 }).catch(() => live.info);
       live.infoAt = Date.now();
+    }
+    if (Date.now() - (live.tmuxAt || 0) > 10000) {
+      live.tmuxAt = Date.now();
+      live.tmux = await fetchUserTmux(dev.id);
     }
   } catch (ex) {
     live.online = false;
@@ -840,34 +848,81 @@ async function openNewDialog(nodeId) {
   if (preferred) await pickNode(preferred);
 }
 
-// tmux sessions the user started on that machine themselves; tapping one attaches to it.
+// tmux sessions the user started on that machine themselves (outside Remota). Never throws: the
+// result says why nothing can be listed, so the UI can tell the user instead of staying silent.
+async function fetchUserTmux(id) {
+  try {
+    const data = await devApi(id, 'tmux', { timeout: 6000 });
+    if (!data.available) return { sessions: [], hint: 'この機器で tmux が見つかりません（tmux をインストールしてください）' };
+    return { sessions: data.sessions, hint: (data.errors || []).length ? `tmux の一覧取得に失敗: ${data.errors.join(' / ')}` : '' };
+  } catch (ex) {
+    if (ex.status === 404) return { sessions: [], hint: '機器側の Remota が古いため tmux を一覧できません。機器で git pull して node bin/remota.js service restart を実行してください', outdated: true };
+    return { sessions: [], hint: '' };
+  }
+}
+
+async function attachUserTmux(id, t) {
+  haptic();
+  const s = t.remotaId ? { id: t.remotaId } : await devApi(id, 'tmux/attach', { method: 'POST', body: JSON.stringify({ name: t.name, socket: t.socket }) });
+  openSession(id, s.id);
+}
+
+function tmuxRow(id, t, onError) {
+  const li = document.createElement('li');
+  li.innerHTML = `${agentIcon(agentKind(t.command))}<div class="row-main"><strong></strong><small></small></div><svg class="ico chev"><use href="#i-chev"/></svg>`;
+  li.querySelector('strong').textContent = t.name;
+  if (t.server && t.server !== 'default') li.querySelector('strong').insertAdjacentHTML('beforeend', '<span class="tmux-tag"></span>');
+  if (t.server && t.server !== 'default') li.querySelector('.tmux-tag').textContent = `-L ${t.server}`;
+  li.querySelector('small').textContent = `${t.remotaId ? '接続中 · ' : t.clients ? 'PC で表示中 · ' : ''}${t.windows}ウィンドウ · ${t.command || ''} · ${t.cwd || ''}`;
+  li.addEventListener('click', () => attachUserTmux(id, t).catch(onError));
+  return li;
+}
+
+// Rows for the sessions tab: running tmux sessions not yet opened in Remota, plus a hint when the
+// machine can't list them.
+function userTmuxRows(id) {
+  const data = (state.live.get(id) || {}).tmux;
+  if (!data) return [];
+  const rows = [];
+  const free = data.sessions.filter((t) => !t.remotaId);
+  if (free.length) {
+    const head = document.createElement('li');
+    head.className = 'tmux-head';
+    head.textContent = '実行中の tmux（タップで接続）';
+    rows.push(head);
+    const ul = document.createElement('li');
+    ul.className = 'tmux-wrap';
+    const inner = document.createElement('ul');
+    inner.className = 'tmux-list';
+    for (const t of free) inner.append(tmuxRow(id, t, (ex) => toast(ex.message)));
+    ul.append(inner);
+    rows.push(ul);
+  }
+  if (data.hint) {
+    const hint = document.createElement('li');
+    hint.className = 'device-empty';
+    hint.textContent = data.hint;
+    rows.push(hint);
+  }
+  return rows;
+}
+
 async function loadUserTmux(id) {
   const field = $('#tmux-field');
   const list = $('#tmux-list');
   field.hidden = true;
-  let data;
-  try {
-    data = await devApi(id, 'tmux', { timeout: 6000 });
-  } catch {
-    return;
-  }
-  if (state.newNode !== id || !data.available || !data.sessions.length) return;
+  const data = await fetchUserTmux(id);
+  if (state.newNode !== id) return;
   list.replaceChildren();
   for (const t of data.sessions) {
+    const li = tmuxRow(id, t, (ex) => toast(ex.message));
+    li.addEventListener('click', () => $('#dlg-new').close(), { once: true });
+    list.append(li);
+  }
+  if (!data.sessions.length) {
     const li = document.createElement('li');
-    li.innerHTML = `${agentIcon(agentKind(t.command))}<div class="row-main"><strong></strong><small></small></div><svg class="ico chev"><use href="#i-chev"/></svg>`;
-    li.querySelector('strong').textContent = t.name;
-    li.querySelector('small').textContent = `${t.remotaId ? '接続中 · ' : t.clients ? 'PC で表示中 · ' : ''}${t.windows}ウィンドウ · ${t.command || ''} · ${t.cwd || ''}`;
-    li.addEventListener('click', async () => {
-      try {
-        const s = t.remotaId ? { id: t.remotaId } : await devApi(id, 'tmux/attach', { method: 'POST', body: JSON.stringify({ name: t.name }) });
-        $('#dlg-new').close();
-        openSession(id, s.id);
-      } catch (ex) {
-        $('#new-error').textContent = ex.message;
-        $('#new-error').hidden = false;
-      }
-    });
+    li.className = 'tmux-none';
+    li.textContent = data.hint || '実行中の tmux セッションはありません（`tmux ls` で表示されるものがここに出ます）';
     list.append(li);
   }
   field.hidden = false;

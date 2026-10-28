@@ -440,6 +440,9 @@ dialog textarea#edit-text { font-family: var(--mono); font-size: 14px; margin-bo
 .tmux-list li:active { background: var(--surface-3); }
 .tmux-list .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tmux-list .row-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tmux-head { color: var(--text-3); font-size: calc(12px * var(--ui-scale)); font-weight: 700; padding: 10px 4px 2px; list-style: none; }
+.tmux-wrap { list-style: none; }
+.tmux-list li.tmux-none { cursor: default; color: var(--text-3); font-size: calc(13px * var(--ui-scale)); }
 .tmux-tag { font-size: calc(11px * var(--ui-scale)); font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px; }
 
 /* QR scanner */

@@ -218,7 +218,8 @@ function createServer(config) {
     if (route === 'GET /api/tmux') return send(res, 200, sessions.listUserTmux());
     if (route === 'POST /api/tmux/attach') {
       try {
-        return send(res, 201, sessions.attachUserTmux((await readJsonBody(req)).name).toJSON());
+        const body = await readJsonBody(req);
+        return send(res, 201, sessions.attachUserTmux(body.name, body.socket).toJSON());
       } catch (err) {
         return send(res, 400, { error: err.message });
       }

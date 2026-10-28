@@ -16,7 +16,7 @@ const BIN = path.resolve(__dirname, '..', 'bin', 'remota.js');
 // (PATH to find claude/codex/…, plus Remota's own settings).
 function capturedEnv() {
   const env = { PATH: process.env.PATH, HOME: os.homedir(), LANG: process.env.LANG || 'C.UTF-8' };
-  for (const k of ['REMOTA_HOME', 'REMOTA_PORT', 'REMOTA_HOST', 'REMOTA_HTTPS', 'REMOTA_HTTP_PORT', 'REMOTA_TMUX', 'SHELL']) {
+  for (const k of ['REMOTA_HOME', 'REMOTA_PORT', 'REMOTA_HOST', 'REMOTA_HTTPS', 'REMOTA_HTTP_PORT', 'REMOTA_TMUX', 'SHELL', 'TMUX_TMPDIR']) {
     if (process.env[k]) env[k] = process.env[k];
   }
   return env;

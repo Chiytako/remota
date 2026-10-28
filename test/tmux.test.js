@@ -30,6 +30,8 @@ test('attach to a tmux session the user started outside Remota, and leave it run
   const { createServer } = require('../src/server');
   userTmux('new-session', '-d', '-s', 'my work', '-x', '100', '-y', '30');
   userTmux('send-keys', '-t', '=my work:', 'echo BEFORE_REMOTA', 'Enter');
+  // A second, named server (tmux -L side) must be found too.
+  userTmux('-L', 'side', 'new-session', '-d', '-s', 'other', '-x', '80', '-y', '24');
 
   const config = loadConfig();
   const { server } = createServer(config);
@@ -39,8 +41,13 @@ test('attach to a tmux session the user started outside Remota, and leave it run
   try {
     const list = await (await fetch(`${base}/api/tmux`, { headers: H })).json();
     assert.strictEqual(list.available, true);
-    assert.deepStrictEqual(list.sessions.map((s) => s.name), ['my work']);
-    assert.strictEqual(list.sessions[0].remotaId, null);
+    assert.deepStrictEqual(list.sessions.map((s) => s.name).sort(), ['my work', 'other']);
+    const side = list.sessions.find((s) => s.name === 'other');
+    assert.strictEqual(side.server, 'side');
+    assert.strictEqual(list.sessions.find((s) => s.name === 'my work').remotaId, null);
+    const o = await (await fetch(`${base}/api/tmux/attach`, { method: 'POST', headers: H, body: JSON.stringify({ name: 'other', socket: side.socket }) })).json();
+    assert.strictEqual(o.externalSocket, side.socket);
+    await fetch(`${base}/api/sessions/${o.id}`, { method: 'DELETE', headers: H });
 
     const s = await (await fetch(`${base}/api/tmux/attach`, { method: 'POST', headers: H, body: JSON.stringify({ name: 'my work' }) })).json();
     assert.strictEqual(s.external, 'my work');
@@ -67,7 +74,7 @@ test('attach to a tmux session the user started outside Remota, and leave it run
     // Attaching twice gives the same Remota session; it is listed as attached.
     const again = await (await fetch(`${base}/api/tmux/attach`, { method: 'POST', headers: H, body: JSON.stringify({ name: 'my work' }) })).json();
     assert.strictEqual(again.id, s.id);
-    assert.strictEqual((await (await fetch(`${base}/api/tmux`, { headers: H })).json()).sessions[0].remotaId, s.id);
+    assert.strictEqual((await (await fetch(`${base}/api/tmux`, { headers: H })).json()).sessions.find((x) => x.name === 'my work').remotaId, s.id);
 
     // Closing it in Remota only detaches: the user's tmux session keeps running.
     await fetch(`${base}/api/sessions/${s.id}`, { method: 'DELETE', headers: H });
@@ -79,10 +86,12 @@ test('attach to a tmux session the user started outside Remota, and leave it run
   } finally {
     server.close();
     server.closeAllConnections();
-    try {
-      userTmux('kill-server');
-    } catch {
-      // already gone
+    for (const args of [['kill-server'], ['-L', 'side', 'kill-server']]) {
+      try {
+        userTmux(...args);
+      } catch {
+        // already gone
+      }
     }
     try {
       execFileSync('tmux', ['-L', 'remota', 'kill-server'], { stdio: 'ignore' });
