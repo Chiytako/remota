@@ -149,7 +149,8 @@ const STATUS_LABEL = { running: '実行中', idle: '待機', waiting: '承認待
 const STATUS_ORDER = { waiting: 0, running: 1, idle: 2, exited: 3 };
 
 function showView(name) {
-  for (const v of document.querySelectorAll('.view')) v.hidden = v.id !== `view-${name}`;
+  // The lock screen is an overlay managed on its own, never by navigation.
+  for (const v of document.querySelectorAll('.view:not(#view-lock)')) v.hidden = v.id !== `view-${name}`;
 }
 
 // Keep the layout above the on-screen keyboard (iOS doesn't resize the layout viewport).
@@ -340,11 +341,16 @@ function sortedSessions(list = state.sessions) {
   return [...list].sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || b.lastOutputAt - a.lastOutputAt);
 }
 
+function agentKind(command) {
+  return /claude/i.test(command || '') ? 'claude' : /codex/i.test(command || '') ? 'codex' : 'shell';
+}
+
 function sessionCard(s) {
   const li = document.createElement('li');
   li.className = `session-card ${s.status}${s.stale ? ' stale' : ''}`;
+  const kind = agentKind(s.command);
   li.innerHTML = `
-    <span class="status-dot ${s.status}"></span>
+    <span class="agent ${kind}"><svg class="ico"><use href="#i-${kind}"/></svg></span>
     <span class="name"></span>
     <span class="badge ${s.status}">${STATUS_LABEL[s.status] || s.status}</span>
     <span class="meta"></span>
@@ -401,6 +407,18 @@ function renderSessions() {
     }
   }
   if (!multi) for (const s of sortedSessions()) list.append(sessionCard(s));
+  renderQuick();
+  renderWaitingBanner();
+}
+
+// Sessions waiting for approval, summarised at the top with a jump to the first one.
+function renderWaitingBanner() {
+  const waiting = sortedSessions(state.sessions.filter((s) => s.status === 'waiting'));
+  const banner = $('#waiting-banner');
+  banner.hidden = !waiting.length;
+  if (!waiting.length) return;
+  banner.textContent = waiting.length === 1 ? `「${waiting[0].name}」が承認を待っています` : `${waiting.length}件のセッションが承認を待っています`;
+  banner.onclick = () => openSession(waiting[0].node, waiting[0].id);
 }
 
 function openSession(node, id) {
@@ -442,7 +460,7 @@ async function refreshSessions() {
   if (term.sessionId) updateDeviceLabel();
   notifyTransitions();
   if (!$('#view-home').hidden) renderSessions();
-  if ($('#dlg-devices').open) renderDevices();
+  if (state.tab === 'devices') renderDevices();
   updateBadges();
 }
 
@@ -467,6 +485,8 @@ function updateBadges() {
   const others = waiting.filter((s) => keyOf(s.node, s.id) !== term.key()).length;
   $('#back-badge').hidden = !others;
   $('#back-badge').textContent = others;
+  $('#tab-badge').hidden = !waiting.length;
+  $('#tab-badge').textContent = waiting.length;
 }
 
 function startPolling(interval) {
@@ -479,9 +499,30 @@ function stopPolling() {
   clearInterval(state.pollTimer);
 }
 
-$('#btn-new').addEventListener('click', () => openNewDialog());
-$('#btn-settings').addEventListener('click', openSettings);
-$('#btn-devices').addEventListener('click', openDevices);
+$('#btn-new').addEventListener('click', () => (state.tab === 'devices' ? openAddDevice() : openNewDialog()));
+// ----- tabs -----
+
+const TAB_TITLES = { sessions: 'セッション', devices: '機器', settings: '設定' };
+
+function switchTab(tab) {
+  state.tab = tab;
+  prefs.set('tab', tab);
+  for (const b of document.querySelectorAll('#tabbar button')) b.classList.toggle('on', b.dataset.tab === tab);
+  for (const p of document.querySelectorAll('.tab-panel')) p.hidden = p.id !== `tab-${tab}`;
+  $('#home-title').textContent = TAB_TITLES[tab];
+  $('#btn-new').hidden = tab === 'settings';
+  $('#host-label').hidden = tab === 'settings';
+  $('.tab-panels').scrollTop = 0;
+  if (tab === 'devices') renderDevices();
+  if (tab === 'settings') openSettings();
+}
+
+for (const b of document.querySelectorAll('#tabbar button')) {
+  b.addEventListener('click', () => {
+    haptic();
+    switchTab(b.dataset.tab);
+  });
+}
 
 // ----- new session -----
 
@@ -506,6 +547,7 @@ async function openNewDialog(nodeId) {
     nodeChips.append(b);
   }
   $('#new-name').value = '';
+  $('#new-fav').checked = false;
   $('#new-error').hidden = true;
   $('#dlg-new').showModal();
   const preferred = [nodeId, prefs.get('lastNode')].find((id) => online.some((n) => n.id === id)) || (online[0] && online[0].id);
@@ -559,6 +601,7 @@ $('#new-form').addEventListener('submit', async (e) => {
       body: JSON.stringify({ name: $('#new-name').value, cwd, command: $('#new-command').value.trim() }),
     });
     prefs.set('lastPreset', state.presetIndex);
+    if ($('#new-fav').checked) addFavorite({ node, cwd, command: $('#new-command').value.trim(), name: $('#new-name').value.trim() });
     prefs.set(`cwdHistory.${node}`, [cwd, ...prefs.get(`cwdHistory.${node}`, []).filter((d) => d !== cwd)].slice(0, 10));
     $('#dlg-new').close();
     state.sessions.push({ ...s, node });
@@ -569,12 +612,44 @@ $('#new-form').addEventListener('submit', async (e) => {
   }
 });
 
-// ----- device management -----
+// ----- device management (the 機器 tab) -----
 
-function openDevices() {
-  renderDevices();
+function openAddDevice(prefill = '') {
   $('#dev-error').hidden = true;
-  $('#dlg-devices').showModal();
+  $('#dev-url').value = prefill;
+  $('#dlg-add-device').showModal();
+}
+
+const pct = (n) => `${Math.max(0, Math.min(100, Math.round(n)))}%`;
+const gb = (bytes) => `${(bytes / 1024 ** 3).toFixed(bytes > 100 * 1024 ** 3 ? 0 : 1)}GB`;
+
+function meter(label, ratio, detail) {
+  const level = ratio > 0.9 ? 'crit' : ratio > 0.7 ? 'hot' : '';
+  return `<div class="stat"><div class="stat-top"><span>${label}</span><b>${detail}</b></div><div class="meter"><i class="${level}" style="width:${pct(ratio * 100)}"></i></div></div>`;
+}
+
+function uptimeText(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  return d ? `${d}日${h}時間` : `${h}時間${Math.floor((sec % 3600) / 60)}分`;
+}
+
+// Machine health at a glance: is the GPU box busy, is the disk filling up?
+function statsHtml(stats) {
+  if (!stats) return '';
+  const parts = [];
+  const load = stats.load[0] / stats.cpus;
+  parts.push(meter('CPU', load, `${stats.load[0].toFixed(1)} / ${stats.cpus}コア`));
+  const used = stats.mem.total - stats.mem.free;
+  parts.push(meter('メモリ', used / stats.mem.total, `${gb(used)} / ${gb(stats.mem.total)}`));
+  if (stats.disk) {
+    const dUsed = stats.disk.total - stats.disk.free;
+    parts.push(meter('ディスク', dUsed / stats.disk.total, `空き ${gb(stats.disk.free)}`));
+  }
+  for (const g of stats.gpus || []) {
+    parts.push(meter(`GPU ${g.util}%`, g.memUsed / g.memTotal, `${(g.memUsed / 1024).toFixed(1)} / ${(g.memTotal / 1024).toFixed(0)}GB · ${g.temp}℃`));
+  }
+  return `<div class="stats">${parts.join('')}</div>`;
 }
 
 function renderDevices() {
@@ -582,15 +657,27 @@ function renderDevices() {
   list.replaceChildren();
   for (const n of state.nodes) {
     const li = document.createElement('li');
-    li.className = 'device-row';
+    li.className = 'device-card';
+    const sessions = state.sessions.filter((s) => s.node === n.id).length;
     li.innerHTML = `
-      <span class="device-dot ${n.online === false ? 'off' : 'on'}"></span>
-      <div class="device-info"><strong></strong><span class="muted small"></span></div>
-      <button type="button" class="btn small-btn" data-act="rename">名前</button>
-      <button type="button" class="btn small-btn danger" data-act="remove">削除</button>`;
+      <div class="device-card-head">
+        <span class="device-dot ${n.online === false ? 'off' : 'on'}"></span>
+        <div class="device-info"><strong></strong><small></small></div>
+        <span class="badge ${n.online === false ? '' : 'idle'}"></span>
+      </div>
+      ${n.online === false ? '<p class="error"></p>' : statsHtml(n.info && n.info.stats)}
+      <div class="device-actions">
+        <button type="button" class="btn small" data-act="new"${n.online === false ? ' disabled' : ''}>＋ 新規</button>
+        <button type="button" class="btn small" data-act="rename">名前</button>
+        <button type="button" class="btn small" data-act="remove">外す</button>
+      </div>`;
     li.querySelector('strong').textContent = n.name;
     const who = n.info ? `${n.info.user}@${n.info.hostname} · ` : '';
-    li.querySelector('.muted').textContent = `${who}${n.url} · ${n.online === false ? `オフライン${n.error ? `: ${n.error}` : ''}` : `${n.latency ?? '–'}ms`}`;
+    const up = n.info && n.info.stats ? ` · 稼働 ${uptimeText(n.info.stats.uptime)}` : '';
+    li.querySelector('small').textContent = `${who}${n.url}${up}`;
+    li.querySelector('.badge').textContent = n.online === false ? 'オフライン' : `${sessions}件 · ${n.latency ?? '–'}ms`;
+    if (n.online === false) li.querySelector('.error').textContent = n.error || '接続できません';
+    li.querySelector('[data-act="new"]').addEventListener('click', () => openNewDialog(n.id));
     li.querySelector('[data-act="rename"]').addEventListener('click', () => {
       const name = prompt('機器の名前', n.name);
       const dev = devices.get(n.id);
@@ -605,16 +692,19 @@ function renderDevices() {
       devices.list = devices.list.filter((d) => d.id !== n.id);
       devices.save();
       state.live.delete(n.id);
-      if (!devices.list.length) {
-        $('#dlg-devices').close();
-        showLogin();
-        return;
-      }
+      if (!devices.list.length) return showLogin();
+  if (prefs.get('lockCredential', null)) {
+    showLock();
+    unlock();
+  }
       refreshSessions();
     });
     list.append(li);
   }
 }
+
+$('#btn-add-url').addEventListener('click', () => openAddDevice());
+$('#btn-add-qr').addEventListener('click', () => scanQr(onScannedDevice));
 
 $('#dev-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -622,12 +712,13 @@ $('#dev-form').addEventListener('submit', async (e) => {
   err.hidden = true;
   const btn = $('#dev-add');
   btn.disabled = true;
-  btn.textContent = '接続を確認中…';
+  btn.textContent = '確認中…';
   try {
     const dev = await addDevice({ name: $('#dev-name').value, url: $('#dev-url').value, token: $('#dev-token').value });
     $('#dev-name').value = '';
     $('#dev-url').value = '';
     $('#dev-token').value = '';
+    $('#dlg-add-device').close();
     toast(`「${dev.name}」を追加しました`);
     await refreshSessions();
   } catch (ex) {
@@ -638,6 +729,20 @@ $('#dev-form').addEventListener('submit', async (e) => {
     btn.textContent = '追加';
   }
 });
+
+// A scanned QR is a login link (http://host:port/#token=…): register that machine right away.
+async function onScannedDevice(text) {
+  try {
+    const dev = await addDevice({ url: text });
+    toast(`「${dev.name}」を追加しました`);
+    await refreshSessions();
+  } catch (ex) {
+    // Let the user see and fix what was read (e.g. a URL without a token).
+    openAddDevice(text);
+    $('#dev-error').textContent = ex.message;
+    $('#dev-error').hidden = false;
+  }
+}
 
 // The machine list lives on this phone; export/import moves it to another phone or browser.
 $('#btn-dev-export').addEventListener('click', async () => {
@@ -1183,7 +1288,8 @@ function pressKey(seq) {
 function renderSnippets() {
   const bar = $('#snippet-bar');
   bar.replaceChildren();
-  bar.hidden = !prefs.get('showSnippets', true);
+  bar.hidden = !prefs.get('showSnippets', false);
+  $('#btn-snippets').setAttribute('aria-pressed', String(!bar.hidden));
   const historyBtn = document.createElement('button');
   historyBtn.type = 'button';
   historyBtn.className = 'key snippet';
@@ -1555,10 +1661,9 @@ $('#dlg-menu').addEventListener('close', async () => {
     openTextView();
   } else if (action === 'history') {
     openHistory();
-  } else if (action === 'snippets') {
-    prefs.set('showSnippets', !prefs.get('showSnippets', true));
-    renderSnippets();
-    term.fitSoon();
+  } else if (action === 'fav') {
+    const s = state.sessions.find((x) => x.node === node && x.id === id);
+    if (s) addFavorite({ node, cwd: s.cwd, command: s.command, name: s.name });
   } else if (action === 'edit-snippets') {
     editText('定型文', '1行に1つ。タップで送信します。', 'snippets', DEFAULT_SNIPPETS, renderSnippets);
   } else if (action === 'edit-keys') {
@@ -1596,7 +1701,10 @@ async function openTextView() {
     text = lines.join('\n');
   }
   const view = $('#text-view');
-  view.textContent = text.replace(/\s+$/, '');
+  view.dataset.raw = text.replace(/\s+$/, '');
+  view.textContent = view.dataset.raw;
+  $('#text-search').value = '';
+  $('#text-count').textContent = '';
   $('#dlg-text').showModal();
   view.scrollTop = view.scrollHeight;
 }
@@ -1681,8 +1789,9 @@ function openSettings() {
   $('#set-auto-enter').checked = prefs.get('autoEnter', true);
   $('#set-choices').checked = prefs.get('choices', true);
   $('#set-haptics').checked = prefs.get('haptics', true);
+  $('#set-wake').checked = prefs.get('wakeLock', false);
+  $('#set-lock').checked = Boolean(prefs.get('lockCredential', null));
   updatePushState();
-  $('#dlg-settings').showModal();
 }
 
 $('#set-theme').addEventListener('change', (e) => {
@@ -1710,7 +1819,6 @@ $('#btn-logout').addEventListener('click', async () => {
   devices.list = [];
   devices.save();
   state.live.clear();
-  $('#dlg-settings').close();
   showLogin();
 });
 
@@ -1816,6 +1924,512 @@ $('#btn-push-test').addEventListener('click', async () => {
   toast(`${ok}/${devices.list.length}台からテスト通知を送信しました`);
 });
 
+// ---------- sheets: shared bits ----------
+
+for (const btn of document.querySelectorAll('[data-close]')) btn.addEventListener('click', () => btn.closest('dialog').close());
+
+$('#btn-snippets').addEventListener('pointerdown', (e) => e.preventDefault());
+$('#btn-snippets').addEventListener('click', () => {
+  prefs.set('showSnippets', !prefs.get('showSnippets', false));
+  renderSnippets();
+  term.fitSoon();
+});
+
+// ---------- QR code scanning ----------
+
+// Reads a QR code with the camera (BarcodeDetector when the browser has it, jsQR otherwise).
+// Cameras need HTTPS or localhost; on plain HTTP a photo of the code works everywhere.
+let qrStop = null;
+
+function scanQr(onResult) {
+  const dlg = $('#dlg-qr');
+  const video = $('#qr-video');
+  const status = $('#qr-status');
+  let stream = null;
+  let raf = 0;
+  let done = false;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const detector = 'BarcodeDetector' in window ? new BarcodeDetector({ formats: ['qr_code'] }) : null;
+
+  const finish = (text) => {
+    if (done) return;
+    done = true;
+    haptic(30);
+    dlg.close();
+    onResult(text);
+  };
+  const decode = async (source, w, h) => {
+    if (detector) {
+      const codes = await detector.detect(source).catch(() => []);
+      if (codes[0]) return codes[0].rawValue;
+    }
+    if (!window.jsQR || !w || !h) return null;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(source, 0, 0, w, h);
+    const code = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+    return code ? code.data : null;
+  };
+  const tick = async () => {
+    if (done || !stream) return;
+    if (video.readyState >= 2) {
+      const scale = Math.min(1, 640 / video.videoWidth);
+      const text = await decode(video, Math.round(video.videoWidth * scale), Math.round(video.videoHeight * scale));
+      if (text) return finish(text);
+    }
+    raf = requestAnimationFrame(tick);
+  };
+  qrStop = () => {
+    cancelAnimationFrame(raf);
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    video.srcObject = null;
+  };
+  dlg.onclose = () => qrStop && qrStop();
+
+  $('#qr-file').onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    status.textContent = '読み取り中…';
+    const img = await createImageBitmap(file).catch(() => null);
+    const scale = img ? Math.min(1, 1200 / Math.max(img.width, img.height)) : 1;
+    const text = img && (await decode(img, Math.round(img.width * scale), Math.round(img.height * scale)));
+    if (text) finish(text);
+    else status.textContent = 'QRコードが見つかりませんでした。もう一度お試しください';
+  };
+  $('#btn-qr-photo').onclick = () => $('#qr-file').click();
+
+  dlg.showModal();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.isSecureContext) {
+    status.textContent = 'この接続ではカメラを使えません。「写真から読み取る」を使ってください';
+    return;
+  }
+  status.textContent = 'カメラを起動しています…';
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then((s) => {
+      if (done || !dlg.open) return s.getTracks().forEach((t) => t.stop());
+      stream = s;
+      video.srcObject = s;
+      video.play().catch(() => {});
+      status.textContent = '機器に表示された QR コードを枠に合わせてください';
+      tick();
+    })
+    .catch(() => {
+      status.textContent = 'カメラを使えませんでした。「写真から読み取る」を使ってください';
+    });
+}
+
+$('#btn-login-qr').addEventListener('click', () =>
+  scanQr(async (text) => {
+    const err = $('#login-error');
+    err.hidden = true;
+    try {
+      await addDevice({ url: text });
+      await boot();
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    }
+  })
+);
+
+// ---------- quick launch (favourites) ----------
+
+function favorites() {
+  return prefs.get('favorites', []).filter((f) => devices.get(f.node));
+}
+
+function addFavorite({ node, cwd, command, name }) {
+  const list = prefs.get('favorites', []).filter((f) => !(f.node === node && f.cwd === cwd && f.command === command));
+  list.unshift({ id: randomId().slice(0, 8), node, cwd, command, name: name || cwd.split('/').filter(Boolean).pop() || cwd });
+  prefs.set('favorites', list.slice(0, 12));
+  toast('クイック起動に追加しました');
+  renderQuick();
+}
+
+function renderQuick() {
+  const favs = favorites();
+  $('#quick-section').hidden = !favs.length;
+  const list = $('#quick-list');
+  list.replaceChildren();
+  for (const f of favs) {
+    const dev = devices.get(f.node);
+    const kind = agentKind(f.command);
+    const b = document.createElement('button');
+    b.className = 'quick';
+    b.innerHTML = `<span class="agent ${kind}"><svg class="ico"><use href="#i-${kind}"/></svg></span><strong></strong><small></small>`;
+    b.querySelector('strong').textContent = f.name;
+    b.querySelector('small').textContent = `${state.nodes.length > 1 ? `${dev.name} · ` : ''}${f.command || 'shell'}`;
+    let timer = null;
+    let removed = false;
+    // Long-press to remove, tap to launch.
+    b.addEventListener('pointerdown', () => {
+      removed = false;
+      timer = setTimeout(() => {
+        removed = true;
+        if (confirm(`「${f.name}」をクイック起動から外しますか？`)) {
+          prefs.set('favorites', prefs.get('favorites', []).filter((x) => x.id !== f.id));
+          renderQuick();
+        }
+      }, 600);
+    });
+    for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) b.addEventListener(ev, () => clearTimeout(timer));
+    b.addEventListener('click', () => !removed && launchFavorite(f));
+    list.append(b);
+  }
+}
+
+async function launchFavorite(f) {
+  haptic(15);
+  try {
+    const s = await devApi(f.node, 'sessions', { method: 'POST', body: JSON.stringify({ name: f.name, cwd: f.cwd, command: f.command }) });
+    state.sessions.push({ ...s, node: f.node });
+    openSession(f.node, s.id);
+  } catch (ex) {
+    toast(`起動できませんでした: ${ex.message}`);
+  }
+}
+
+// ---------- reviewing an agent's work: git changes ----------
+
+function diffLines(diff, container) {
+  const frag = document.createDocumentFragment();
+  for (const line of diff.split('\n')) {
+    const el = document.createElement('span');
+    el.className = 'ln';
+    if (line.startsWith('diff --git')) {
+      el.classList.add('fileh');
+      el.textContent = line.replace(/^diff --git a\/(.*) b\/.*$/, '$1');
+    } else if (line.startsWith('@@')) {
+      el.classList.add('hunk');
+      el.textContent = line;
+    } else if (/^(index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(line)) {
+      continue;
+    } else {
+      if (line.startsWith('+')) el.classList.add('add');
+      else if (line.startsWith('-')) el.classList.add('del');
+      el.textContent = line || ' ';
+    }
+    frag.append(el);
+  }
+  container.replaceChildren(frag);
+}
+
+async function openGit(file = '') {
+  const dlg = $('#dlg-git');
+  if (!dlg.open) dlg.showModal();
+  const view = $('#git-diff');
+  view.innerHTML = '<div class="note">読み込み中…</div>';
+  let g;
+  try {
+    g = await devApi(term.node, `sessions/${term.sessionId}/git${file ? `?file=${encodeURIComponent(file)}` : ''}`);
+  } catch (ex) {
+    view.innerHTML = '';
+    view.append(Object.assign(document.createElement('div'), { className: 'note', textContent: ex.message }));
+    return;
+  }
+  const summary = $('#git-summary');
+  const files = $('#git-files');
+  if (!g.repo) {
+    summary.replaceChildren();
+    files.replaceChildren();
+    view.innerHTML = '<div class="note">この作業フォルダは git リポジトリではありません。</div>';
+    return;
+  }
+  summary.innerHTML = '<span class="branch"></span><span></span>';
+  summary.querySelector('.branch').textContent = g.branch;
+  summary.lastChild.textContent = g.files.length ? `${g.files.length}ファイル変更${g.commits[0] ? ` · 最新: ${g.commits[0].subject} (${g.commits[0].when})` : ''}` : '変更はありません';
+  if (!file) {
+    files.replaceChildren();
+    const all = document.createElement('li');
+    all.className = 'on';
+    all.innerHTML = '<span class="gcode">∑</span><span class="fname">すべての変更</span>';
+    all.addEventListener('click', () => openGit());
+    files.append(all);
+    for (const f of g.files) {
+      const li = document.createElement('li');
+      const code = f.code === '??' ? 'N' : f.code[0];
+      li.innerHTML = `<span class="gcode ${code}"></span><span class="fname"></span>`;
+      li.querySelector('.gcode').textContent = code;
+      li.querySelector('.fname').textContent = f.path;
+      li.addEventListener('click', () => {
+        files.querySelectorAll('li').forEach((x) => x.classList.remove('on'));
+        li.classList.add('on');
+        openGit(f.path);
+      });
+      files.append(li);
+    }
+  }
+  if (!g.diff) view.innerHTML = '<div class="note">差分はありません。</div>';
+  else diffLines(g.diff + (g.truncated ? '\n… (長いため省略)' : ''), view);
+  view.scrollTop = 0;
+}
+
+$('#btn-git').addEventListener('click', () => openGit());
+$('#btn-git-refresh').addEventListener('click', () => openGit());
+
+// ---------- reviewing an agent's work: files ----------
+
+let filePath = '';
+
+async function openFiles(rel = filePath) {
+  const dlg = $('#dlg-files');
+  if (!dlg.open) dlg.showModal();
+  const list = $('#file-list');
+  const view = $('#file-view');
+  let r;
+  try {
+    r = await devApi(term.node, `sessions/${term.sessionId}/files?path=${encodeURIComponent(rel)}`);
+  } catch (ex) {
+    if (rel) return openFiles('');
+    toast(ex.message);
+    return;
+  }
+  filePath = r.path;
+  renderCrumbs(r.path, r.type === 'dir');
+  $('#btn-file-insert').hidden = r.type === 'dir';
+  if (r.type === 'dir') {
+    view.hidden = true;
+    list.hidden = false;
+    list.replaceChildren();
+    for (const e of r.entries) {
+      const li = document.createElement('li');
+      li.className = e.dir ? 'dir' : '';
+      li.innerHTML = `<svg class="ico"><use href="#i-${e.dir ? 'folder' : 'file'}"/></svg><span class="fname"></span><small></small>`;
+      li.querySelector('.fname').textContent = e.name;
+      li.querySelector('.fname').style.direction = 'ltr';
+      li.querySelector('small').textContent = e.dir ? '' : `${e.size < 1024 ? `${e.size}B` : `${Math.round(e.size / 1024)}KB`} · ${timeAgo(e.mtime)}`;
+      li.addEventListener('click', () => openFiles(r.path ? `${r.path}/${e.name}` : e.name));
+      list.append(li);
+    }
+    if (!r.entries.length) list.innerHTML = '<li class="text-3">空のフォルダ</li>';
+    return;
+  }
+  list.hidden = true;
+  view.hidden = false;
+  view.replaceChildren();
+  if (/\.(png|jpe?g|gif|webp|svg)$/i.test(r.path)) {
+    // Images need the token, so fetch them as blobs instead of pointing <img> at the URL.
+    const dev = devices.get(term.node);
+    const res = await fetch(`${dev.url}/api/sessions/${term.sessionId}/raw?path=${encodeURIComponent(r.path)}`, { headers: { Authorization: `Bearer ${dev.token}` } });
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(await res.blob());
+    view.append(img);
+  } else if (r.binary) {
+    view.innerHTML = '<div class="note">バイナリファイルのため表示できません。</div>';
+  } else {
+    const frag = document.createDocumentFragment();
+    r.content.split('\n').forEach((line, i) => {
+      const el = document.createElement('span');
+      el.className = 'ln';
+      el.innerHTML = '<span class="num"></span>';
+      el.firstChild.textContent = i + 1;
+      el.append(line || ' ');
+      frag.append(el);
+    });
+    view.append(frag);
+    if (r.truncated) view.append(Object.assign(document.createElement('div'), { className: 'note', textContent: '… 大きいファイルのため先頭のみ表示しています' }));
+  }
+  view.scrollTop = 0;
+}
+
+function renderCrumbs(rel, isDir) {
+  const crumbs = $('#file-crumbs');
+  crumbs.replaceChildren();
+  const parts = rel ? rel.split('/') : [];
+  const add = (label, target) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', () => openFiles(target));
+    crumbs.append(b);
+  };
+  add('作業フォルダ', '');
+  parts.forEach((p, i) => {
+    crumbs.append(Object.assign(document.createElement('span'), { textContent: '/' }));
+    if (i === parts.length - 1 && !isDir) crumbs.append(Object.assign(document.createElement('span'), { textContent: p }));
+    else add(p, parts.slice(0, i + 1).join('/'));
+  });
+}
+
+$('#btn-files').addEventListener('click', () => openFiles(''));
+
+// Referencing a file for the agent: `@path` is how Claude Code attaches a file to a message.
+$('#btn-file-insert').addEventListener('click', () => {
+  input.value = `${input.value}${input.value && !input.value.endsWith(' ') ? ' ' : ''}@${filePath} `;
+  autosize();
+  saveDraft();
+  $('#dlg-files').close();
+  input.focus();
+});
+
+// ---------- keep the screen on while watching an agent ----------
+
+let wakeLock = null;
+
+async function updateWakeLock() {
+  const want = prefs.get('wakeLock', false) && !$('#view-term').hidden && !document.hidden;
+  if (want && !wakeLock && 'wakeLock' in navigator) {
+    wakeLock = await navigator.wakeLock.request('screen').catch(() => null);
+    if (wakeLock) wakeLock.addEventListener('release', () => (wakeLock = null));
+  } else if (!want && wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+}
+
+$('#set-wake').addEventListener('change', (e) => {
+  prefs.set('wakeLock', e.target.checked);
+  if (e.target.checked && !('wakeLock' in navigator)) toast('このブラウザは画面ロック防止に対応していません');
+  updateWakeLock();
+});
+
+// ---------- app lock with Face ID / fingerprint (WebAuthn platform authenticator) ----------
+
+// A local gate only: the device's biometrics must succeed before the app shows anything.
+const LOCK_AFTER_MS = 60 * 1000;
+let hiddenAt = 0;
+
+function lockSupported() {
+  return window.isSecureContext && window.PublicKeyCredential && navigator.credentials;
+}
+
+async function verifyUser() {
+  const cred = prefs.get('lockCredential', null);
+  if (!cred) return true;
+  try {
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ type: 'public-key', id: b64ToBytes(cred) }],
+        userVerification: 'required',
+        timeout: 60000,
+      },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function showLock() {
+  $('#view-lock').hidden = false;
+  document.body.classList.add('locked');
+}
+
+async function unlock() {
+  if (await verifyUser()) {
+    $('#view-lock').hidden = true;
+    document.body.classList.remove('locked');
+    return true;
+  }
+  toast('認証できませんでした');
+  return false;
+}
+
+$('#btn-unlock').addEventListener('click', unlock);
+
+$('#set-lock').addEventListener('change', async (e) => {
+  if (!e.target.checked) {
+    if (!(await verifyUser())) {
+      e.target.checked = true;
+      return;
+    }
+    prefs.remove('lockCredential');
+    toast('ロックを解除しました');
+    return;
+  }
+  if (!lockSupported()) {
+    e.target.checked = false;
+    toast('HTTPS 接続のときに使えます');
+    return;
+  }
+  try {
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rp: { name: 'Remota' },
+        user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'remota', displayName: 'Remota' },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+        timeout: 60000,
+      },
+    });
+    prefs.set('lockCredential', bytesToB64(cred.rawId));
+    toast('Face ID / 指紋でのロックを有効にしました');
+  } catch {
+    e.target.checked = false;
+    toast('登録できませんでした');
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    hiddenAt = Date.now();
+  } else if (prefs.get('lockCredential', null) && hiddenAt && Date.now() - hiddenAt > LOCK_AFTER_MS) {
+    showLock();
+    unlock();
+  }
+  updateWakeLock();
+});
+
+// ---------- text view search ----------
+
+let textMatches = [];
+let textIndex = 0;
+
+function runTextSearch() {
+  const view = $('#text-view');
+  const raw = view.dataset.raw || '';
+  const q = $('#text-search').value;
+  textMatches = [];
+  if (!q) {
+    view.textContent = raw;
+    $('#text-count').textContent = '';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  const lower = raw.toLowerCase();
+  const needle = q.toLowerCase();
+  let pos = 0;
+  for (let i = lower.indexOf(needle); i !== -1 && textMatches.length < 2000; i = lower.indexOf(needle, i + needle.length)) {
+    frag.append(raw.slice(pos, i));
+    const mark = document.createElement('mark');
+    mark.textContent = raw.slice(i, i + q.length);
+    frag.append(mark);
+    textMatches.push(mark);
+    pos = i + q.length;
+  }
+  frag.append(raw.slice(pos));
+  view.replaceChildren(frag);
+  textIndex = textMatches.length - 1;
+  focusMatch();
+}
+
+function focusMatch() {
+  $('#text-count').textContent = textMatches.length ? `${textIndex + 1}/${textMatches.length}` : '0件';
+  textMatches.forEach((m, i) => m.classList.toggle('cur', i === textIndex));
+  if (textMatches[textIndex]) textMatches[textIndex].scrollIntoView({ block: 'center' });
+}
+
+let searchTimer = null;
+$('#text-search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runTextSearch, 150);
+});
+$('#btn-text-prev').addEventListener('click', () => {
+  if (!textMatches.length) return;
+  textIndex = (textIndex - 1 + textMatches.length) % textMatches.length;
+  focusMatch();
+});
+$('#btn-text-next').addEventListener('click', () => {
+  if (!textMatches.length) return;
+  textIndex = (textIndex + 1) % textMatches.length;
+  focusMatch();
+});
+
 // ---------- routing & boot ----------
 
 function route() {
@@ -1825,12 +2439,15 @@ function route() {
     showView('term');
     term.open(m[1], m[2]);
     term.fitSoon();
+    updateWakeLock();
     // Slower poll in the terminal: only for the back-button badge and heads-up toasts.
     startPolling(5000);
   } else {
     saveDraft();
     term.close();
     showView('home');
+    switchTab(state.tab || prefs.get('tab', 'sessions'));
+    updateWakeLock();
     startPolling(3000);
   }
 }
@@ -1857,7 +2474,8 @@ async function boot() {
   registerPush(devices.list).catch(() => {});
 }
 
-window.addEventListener('hashchange', route);
+// A login link opened while the app is already showing only changes the fragment; handle it too.
+window.addEventListener('hashchange', () => (/[#&]token=/.test(location.hash) ? boot() : route()));
 window.addEventListener('online', () => term.reconnectNow());
 window.addEventListener('pagehide', saveDraft);
 document.addEventListener('visibilitychange', () => {

@@ -10,6 +10,7 @@ const { WebSocketServer } = require('ws');
 const { CONFIG_DIR } = require('./config');
 const { Notifier } = require('./notify');
 const { SessionManager } = require('./sessions');
+const workspace = require('./workspace');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MODULES_DIR = path.join(__dirname, '..', 'node_modules');
@@ -23,6 +24,7 @@ const VENDOR = {
   'xterm.css': '@xterm/xterm/css/xterm.css',
   'addon-fit.js': '@xterm/addon-fit/lib/addon-fit.js',
   'addon-web-links.js': '@xterm/addon-web-links/lib/addon-web-links.js',
+  'jsqr.js': 'jsqr/dist/jsQR.js',
 };
 
 const MIME = {
@@ -33,6 +35,16 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+};
+
+const RAW_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
 };
 
 function safeEqual(a, b) {
@@ -190,6 +202,7 @@ function createServer(config) {
         defaultCwd: config.defaultCwd,
         presets: config.presets,
         vapidPublicKey: notifier.publicKey,
+        stats: await workspace.machineStats(),
       });
     }
     if (route === 'GET /api/sessions') return send(res, 200, sessions.list());
@@ -219,6 +232,28 @@ function createServer(config) {
       if (req.method === 'POST' && action === '/scroll') {
         const { direction, lines } = await readJsonBody(req);
         return send(res, 200, { ok: session.scroll(direction, lines) });
+      }
+      if (req.method === 'GET' && action === '/git') {
+        return send(res, 200, await workspace.gitChanges(session.cwd, url.searchParams.get('file') || ''));
+      }
+      if (req.method === 'GET' && action === '/files') {
+        try {
+          return send(res, 200, workspace.browse(session.cwd, url.searchParams.get('path') || ''));
+        } catch (err) {
+          return send(res, err.status || 500, { error: err.message });
+        }
+      }
+      if (req.method === 'GET' && action === '/raw') {
+        let file;
+        try {
+          file = workspace.rawFile(session.cwd, url.searchParams.get('path') || '');
+        } catch (err) {
+          return send(res, err.status || 500, { error: err.message });
+        }
+        const type = RAW_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
+        // Never let a served file run as a page on this origin.
+        res.writeHead(200, { 'Content-Type': type, 'Content-Security-Policy': 'sandbox', 'Cache-Control': 'no-store' });
+        return fs.createReadStream(file).pipe(res);
       }
       if (req.method === 'GET' && action === '/text') {
         const text = session.text(Number(url.searchParams.get('lines')) || 3000);

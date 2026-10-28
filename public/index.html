@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#0b0f14">
+  <meta name="theme-color" content="#0b0c0f">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -20,90 +20,225 @@
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
-      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
-      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" class="fill"/><circle cx="12" cy="12" r="1.7" class="fill"/><circle cx="19" cy="12" r="1.7" class="fill"/></symbol>
       <symbol id="i-clip" viewBox="0 0 24 24"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></symbol>
       <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
-      <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
-      <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+      <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5.5 11.5L12 5l6.5 6.5"/></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-      <symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
-      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
-      <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+      <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+      <symbol id="i-history" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.5V12l3 2"/></symbol>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></symbol>
+      <symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/></symbol>
+      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7.5 7.5h.01M7.5 16.5h.01"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+      <symbol id="i-qr" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.2"/><rect x="14" y="3.5" width="6.5" height="6.5" rx="1.2"/><rect x="3.5" y="14" width="6.5" height="6.5" rx="1.2"/><path d="M14 14h2.5v2.5H14zM18 18h2.5v2.5H18zM14 20.5h2M20.5 14v2"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></symbol>
+      <symbol id="i-diff" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 8.2v7.6M18 11.2c0 3.8-4 4.3-9.8 5"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h4.5"/></symbol>
+      <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.8l2.5 5.1 5.6.8-4 4 .9 5.6-5-2.7-5 2.7.9-5.6-4-4 5.6-.8z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+      <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.5a2 2 0 0 1 2-2h2l1.5-2h5l1.5 2h2a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+      <symbol id="i-claude" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></symbol>
+      <symbol id="i-codex" viewBox="0 0 24 24"><path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/><path d="M9 10l-2 2 2 2M15 10l2 2-2 2"/></symbol>
+      <symbol id="i-shell" viewBox="0 0 24 24"><path d="M5 8l4 4-4 4M11 17h8"/></symbol>
     </defs>
   </svg>
 
-  <!-- Login -->
-  <section id="view-login" class="view" hidden>
-    <div class="login-box">
-      <img src="/icons/icon.svg" alt="" class="login-logo">
-      <h1>Remota</h1>
-      <p class="muted">この機器で <code>remota</code> を起動したときに表示されたトークンを入力するか、表示されたQRコードを読み取ってください。</p>
-      <form id="login-form">
-        <input id="login-token" type="password" autocomplete="current-password" placeholder="アクセストークン" required>
-        <button type="submit" class="btn primary">ログイン</button>
-      </form>
-      <p id="login-error" class="error" hidden></p>
+  <!-- Lock -->
+  <section id="view-lock" class="view center-view" hidden>
+    <div class="onboard">
+      <div class="lock-icon"><svg class="ico xl"><use href="#i-lock"/></svg></div>
+      <h1>ロック中</h1>
+      <p class="text-2">Face ID / 指紋で解除します</p>
+      <button class="btn primary wide" id="btn-unlock">解除する</button>
     </div>
   </section>
 
-  <!-- Session list -->
+  <!-- First run -->
+  <section id="view-login" class="view center-view" hidden>
+    <div class="onboard">
+      <img src="/icons/icon.svg" alt="" class="onboard-logo">
+      <h1>Remota</h1>
+      <p class="text-2">スマホから、手元のどのマシンの Claude Code / Codex も操作できます。まずはこの機器を登録しましょう。</p>
+      <button class="btn primary wide" id="btn-login-qr"><svg class="ico"><use href="#i-qr"/></svg>QRコードを読み取る</button>
+      <div class="or"><span>または</span></div>
+      <form id="login-form" class="stack">
+        <input id="login-token" type="password" autocomplete="current-password" placeholder="アクセストークン" required>
+        <button type="submit" class="btn wide">トークンで登録</button>
+      </form>
+      <p id="login-error" class="error" hidden></p>
+      <p class="text-3 small">トークンと QR コードは、この機器で <code>remota</code> を起動すると表示されます。</p>
+    </div>
+  </section>
+
+  <!-- Main: tabs -->
   <section id="view-home" class="view" hidden>
-    <header class="bar">
-      <div class="bar-title home-title">
-        <strong>Remota</strong>
-        <span id="host-label" class="muted small"></span>
+    <header class="large-header">
+      <div class="large-header-row">
+        <div>
+          <h1 id="home-title">セッション</h1>
+          <span id="host-label" class="text-2 small"></span>
+        </div>
+        <button class="round-btn primary" id="btn-new" aria-label="新規セッション"><svg class="ico"><use href="#i-plus"/></svg></button>
       </div>
-      <button class="icon-btn" id="btn-devices" aria-label="機器の管理"><svg class="ico"><use href="#i-server"/></svg></button>
-      <button class="icon-btn" id="btn-settings" aria-label="設定"><svg class="ico"><use href="#i-gear"/></svg></button>
     </header>
-    <div id="home-offline" class="conn-banner" hidden>サーバーに接続できません — 再試行中…</div>
-    <main class="home-main">
-      <ul id="session-list" class="session-list"></ul>
-      <div id="empty-state" class="empty" hidden>
-        <img src="/icons/icon.svg" alt="" width="64" height="64">
-        <p>セッションがありません</p>
-        <p class="muted small">「新規セッション」から Claude Code や Codex を起動できます。<br>tmux 上で動くので、スマホを閉じても作業は続きます。<br>右上の <svg class="ico tiny" style="opacity:1;vertical-align:-2px"><use href="#i-server"/></svg> から他の機器も追加できます。</p>
+    <div id="home-offline" class="banner warn" hidden></div>
+
+    <main class="tab-panels">
+      <div class="tab-panel" id="tab-sessions">
+        <button id="waiting-banner" class="waiting-banner" hidden></button>
+        <div id="quick-section" class="section" hidden>
+          <div class="section-title">クイック起動</div>
+          <div id="quick-list" class="quick-list"></div>
+        </div>
+        <ul id="session-list" class="session-list"></ul>
+        <div id="empty-state" class="empty" hidden>
+          <div class="empty-art"><svg class="ico xl"><use href="#i-term"/></svg></div>
+          <h2>セッションはまだありません</h2>
+          <p class="text-2">右上の ＋ から Claude Code や Codex を起動します。tmux 上で動くので、スマホを閉じても作業は続きます。</p>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-devices" hidden>
+        <div class="add-row">
+          <button class="btn tile" id="btn-add-qr"><svg class="ico"><use href="#i-qr"/></svg>QRで追加</button>
+          <button class="btn tile" id="btn-add-url"><svg class="ico"><use href="#i-link"/></svg>URLで追加</button>
+        </div>
+        <ul id="device-list" class="device-list"></ul>
+        <div class="group-footer">
+          <button class="link-btn" id="btn-dev-export">機器リストを書き出す</button>
+          <button class="link-btn" id="btn-dev-import">読み込む</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-settings" hidden>
+        <div class="group-title">通知</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main"><span>プッシュ通知</span><small id="push-state"></small></div>
+            <button type="button" class="btn small" id="btn-push">有効化</button>
+          </div>
+          <button class="row row-btn" id="btn-push-test"><span class="row-main">テスト通知を送る</span><svg class="ico chev"><use href="#i-chev"/></svg></button>
+        </div>
+
+        <div class="group-title">表示</div>
+        <div class="group">
+          <label class="row"><span class="row-main">テーマ</span>
+            <select id="set-theme">
+              <option value="midnight">ダーク</option>
+              <option value="light">ライト</option>
+              <option value="dracula">Dracula</option>
+              <option value="solarized">Solarized</option>
+            </select>
+          </label>
+          <label class="row"><span class="row-main"><span>コントラスト補正</span><small>薄いグレーの文字を読みやすく</small></span>
+            <select id="set-contrast">
+              <option value="1">オフ</option>
+              <option value="4.5">標準</option>
+              <option value="7">高</option>
+            </select>
+          </label>
+          <label class="row"><span class="row-main">行間</span>
+            <select id="set-line-height">
+              <option value="1">狭い</option>
+              <option value="1.15">標準</option>
+              <option value="1.3">広い</option>
+            </select>
+          </label>
+          <label class="row"><span class="row-main"><span>文字サイズ（UI）</span><small>ターミナルはピンチで調整</small></span>
+            <select id="set-ui-scale">
+              <option value="1">標準</option>
+              <option value="1.12">大</option>
+              <option value="1.25">特大</option>
+            </select>
+          </label>
+          <label class="row"><span class="row-main">太字</span><input type="checkbox" class="switch" id="set-bold"></label>
+          <label class="row"><span class="row-main"><span>画面を消さない</span><small>ターミナル表示中</small></span><input type="checkbox" class="switch" id="set-wake"></label>
+        </div>
+
+        <div class="group-title">入力</div>
+        <div class="group">
+          <label class="row"><span class="row-main"><span>Enterで送信</span><small>オフで改行（送信は↑）</small></span><input type="checkbox" class="switch" id="set-enter-send"></label>
+          <label class="row"><span class="row-main"><span>送信時に自動でEnter</span><small>↑の長押しでEnterなし送信</small></span><input type="checkbox" class="switch" id="set-auto-enter"></label>
+          <label class="row"><span class="row-main"><span>承認ボタン</span><small>画面の選択肢をボタン化</small></span><input type="checkbox" class="switch" id="set-choices"></label>
+          <label class="row"><span class="row-main">触覚フィードバック</span><input type="checkbox" class="switch" id="set-haptics"></label>
+          <label class="row"><span class="row-main">音声入力の言語</span>
+            <select id="set-lang">
+              <option value="ja-JP">日本語</option>
+              <option value="en-US">English</option>
+              <option value="zh-CN">中文</option>
+              <option value="ko-KR">한국어</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="group-title">セキュリティ</div>
+        <div class="group">
+          <label class="row"><span class="row-main"><span>Face ID / 指紋でロック</span><small id="lock-state">1分以上離れたら再ロック</small></span><input type="checkbox" class="switch" id="set-lock"></label>
+          <button class="row row-btn danger" id="btn-logout"><span class="row-main">登録をすべて削除</span></button>
+        </div>
+
+        <div class="group-title">エージェント連携</div>
+        <div class="group">
+          <div class="row"><span class="row-main"><small>各機器で <code>remota hooks</code> を実行し、表示された設定を Claude Code に加えると、完了・承認待ちを確実に通知できます。</small></span></div>
+        </div>
+        <p class="text-3 small center">Remota — 課金なし・セルフホスト</p>
       </div>
     </main>
-    <button class="fab" id="btn-new"><svg class="ico"><use href="#i-plus"/></svg>新規セッション</button>
+
+    <nav class="tabbar" id="tabbar">
+      <button data-tab="sessions" class="on"><svg class="ico"><use href="#i-term"/></svg><span>セッション</span><span class="count-badge" id="tab-badge" hidden></span></button>
+      <button data-tab="devices"><svg class="ico"><use href="#i-server"/></svg><span>機器</span></button>
+      <button data-tab="settings"><svg class="ico"><use href="#i-gear"/></svg><span>設定</span></button>
+    </nav>
   </section>
 
   <!-- Terminal -->
   <section id="view-term" class="view" hidden>
-    <header class="bar term-bar">
-      <button class="icon-btn back-btn" id="btn-back" aria-label="セッション一覧へ">
+    <header class="term-bar">
+      <button class="icon-btn back-btn" id="btn-back" aria-label="一覧へ">
         <svg class="ico"><use href="#i-back"/></svg>
         <span id="back-badge" class="count-badge" hidden></span>
       </button>
-      <button class="bar-title switcher" id="btn-switch" aria-label="セッションを切り替え">
+      <button class="switcher" id="btn-switch" aria-label="セッションを切り替え">
         <span class="status-dot" id="term-status"></span>
-        <span class="title-stack"><strong id="term-name"></strong><span id="term-device" class="term-device"></span></span>
+        <span class="title-stack">
+          <strong id="term-name"></strong>
+          <span class="title-sub"><span id="term-pill" class="status-pill" aria-live="polite"></span><span id="term-device" class="term-device"></span></span>
+        </span>
         <svg class="ico tiny"><use href="#i-down"/></svg>
       </button>
-      <span id="term-pill" class="status-pill" aria-live="polite"></span>
-      <span id="term-latency" class="latency"></span>
+      <button class="icon-btn" id="btn-git" aria-label="変更を確認"><svg class="ico"><use href="#i-diff"/></svg></button>
+      <button class="icon-btn" id="btn-files" aria-label="ファイル"><svg class="ico"><use href="#i-folder"/></svg></button>
       <button class="icon-btn" id="btn-term-menu" aria-label="メニュー"><svg class="ico"><use href="#i-more"/></svg></button>
     </header>
-    <div id="conn-banner" class="conn-banner" hidden></div>
+    <div id="conn-banner" class="banner warn" hidden></div>
     <div id="terminal-wrap">
       <div id="terminal"></div>
-      <div id="zoom-hud" class="zoom-hud" hidden></div>
+      <span id="term-latency" class="latency"></span>
+      <div id="zoom-hud" class="hud" hidden></div>
       <button id="btn-jump" class="jump-btn" hidden>最新へ ↓</button>
     </div>
     <div id="choice-bar" class="choice-bar" hidden>
       <div class="choice-title" id="choice-title">承認待ち</div>
       <div class="choice-list" id="choice-list"></div>
     </div>
-    <div id="keybar" class="keybar" role="toolbar" aria-label="特殊キー"></div>
-    <div id="snippet-bar" class="snippet-bar" hidden></div>
+    <div class="accessory">
+      <div id="snippet-bar" class="snippet-bar" hidden></div>
+      <div id="keybar" class="keybar" role="toolbar" aria-label="特殊キー"></div>
+    </div>
     <form id="compose" class="compose">
       <button type="button" class="icon-btn" id="btn-kbd" aria-label="直接入力モード" aria-pressed="false"><svg class="ico"><use href="#i-kbd"/></svg></button>
-      <button type="button" class="icon-btn" id="btn-attach" aria-label="ファイルを添付"><svg class="ico"><use href="#i-clip"/></svg></button>
-      <input type="file" id="file-input" hidden multiple>
+      <button type="button" class="icon-btn" id="btn-snippets" aria-label="定型文" aria-pressed="false"><svg class="ico"><use href="#i-bolt"/></svg></button>
       <div class="compose-field">
-        <textarea id="compose-input" rows="1" placeholder="メッセージ / コマンド" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="send"></textarea>
-        <button type="button" class="icon-btn mic" id="btn-mic" aria-label="音声入力"><svg class="ico"><use href="#i-mic"/></svg></button>
+        <button type="button" class="icon-btn inner" id="btn-attach" aria-label="ファイルを添付"><svg class="ico"><use href="#i-clip"/></svg></button>
+        <input type="file" id="file-input" hidden multiple>
+        <textarea id="compose-input" rows="1" placeholder="メッセージ" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="send"></textarea>
+        <button type="button" class="icon-btn inner" id="btn-mic" aria-label="音声入力"><svg class="ico"><use href="#i-mic"/></svg></button>
       </div>
       <button type="submit" class="send-btn" id="btn-send" aria-label="送信（長押しでEnterなし送信）"><svg class="ico"><use href="#i-send"/></svg></button>
     </form>
@@ -112,105 +247,99 @@
   <!-- Sheets -->
   <dialog id="dlg-new" class="sheet">
     <form method="dialog" id="new-form">
-      <div class="grabber"></div>
-      <h2>新規セッション</h2>
-      <label id="node-field">機器
-        <div id="node-list" class="chips"></div>
-      </label>
-      <label>起動するもの
-        <div id="preset-list" class="chips"></div>
-      </label>
-      <label>コマンド
-        <input id="new-command" placeholder="空欄ならシェルのみ" autocapitalize="off" autocorrect="off" spellcheck="false">
-      </label>
-      <label>作業ディレクトリ
+      <div class="sheet-head"><button value="cancel" class="link-btn" formnovalidate>キャンセル</button><h2>新規セッション</h2><button value="ok" class="link-btn strong" id="new-submit">起動</button></div>
+      <div class="field" id="node-field"><span class="field-label">機器</span><div id="node-list" class="chips"></div></div>
+      <div class="field"><span class="field-label">起動するもの</span><div id="preset-list" class="chips"></div>
+        <input id="new-command" placeholder="コマンド（空欄ならシェル）" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+      <div class="field"><span class="field-label">作業フォルダ</span>
         <input id="new-cwd" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <div id="cwd-chips" class="chips"></div>
-      </label>
-      <label>名前（任意）
-        <input id="new-name" autocapitalize="off">
-      </label>
+        <div id="cwd-chips" class="chips small-chips"></div></div>
+      <div class="field"><span class="field-label">名前（任意）</span><input id="new-name" autocapitalize="off"></div>
+      <label class="row plain"><span class="row-main"><span>クイック起動に追加</span><small>次回からワンタップで起動</small></span><input type="checkbox" class="switch" id="new-fav"></label>
       <p id="new-error" class="error" hidden></p>
-      <div class="sheet-actions">
-        <button value="cancel" class="btn" formnovalidate>キャンセル</button>
-        <button value="ok" class="btn primary" id="new-submit">起動</button>
-      </div>
     </form>
   </dialog>
 
-  <dialog id="dlg-devices" class="sheet">
-    <form method="dialog">
-      <div class="grabber"></div>
-      <h2>機器の管理</h2>
-      <ul id="device-list" class="device-list"></ul>
-      <h3 class="setting-head">機器を追加</h3>
-      <p class="muted small">追加する機器で Remota を起動し、表示された URL（<code>…/#token=…</code> 付き）をそのまま貼り付けてください。スマホが各機器に直接つなぐので、どの機器が止まっていても他の機器は使えます。</p>
-    </form>
-    <form id="dev-form" class="dev-form">
-      <input id="dev-name" placeholder="名前（例: 自宅Mac、GPUサーバー）" autocapitalize="off" autocorrect="off">
-      <input id="dev-url" placeholder="URL（例: http://192.168.1.20:7681/#token=…）" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <input id="dev-token" type="password" placeholder="トークン（URLに含まれていれば不要）" autocomplete="off">
+  <dialog id="dlg-add-device" class="sheet">
+    <form id="dev-form">
+      <div class="sheet-head"><button type="button" class="link-btn" data-close>キャンセル</button><h2>機器を追加</h2><button type="submit" class="link-btn strong" id="dev-add">追加</button></div>
+      <p class="text-2 small">追加する機器で <code>remota</code> を起動し、表示された URL（<code>…/#token=…</code>）を貼り付けます。</p>
+      <div class="field"><span class="field-label">URL</span><input id="dev-url" placeholder="http://192.168.1.20:7681/#token=…" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+      <div class="field"><span class="field-label">トークン（URLに含まれていれば不要）</span><input id="dev-token" type="password" autocomplete="off"></div>
+      <div class="field"><span class="field-label">名前（任意）</span><input id="dev-name" placeholder="例: 自宅Mac、GPUサーバー" autocapitalize="off" autocorrect="off"></div>
       <p id="dev-error" class="error" hidden></p>
-      <div class="sheet-actions">
-        <button type="button" class="btn" id="btn-dev-export">書き出し</button>
-        <button type="button" class="btn" id="btn-dev-import">読み込み</button>
-        <button type="button" class="btn" onclick="this.closest('dialog').close()">閉じる</button>
-        <button type="submit" class="btn primary" id="dev-add">追加</button>
-      </div>
     </form>
+  </dialog>
+
+  <dialog id="dlg-qr" class="sheet">
+    <div class="sheet-head"><button type="button" class="link-btn" data-close>閉じる</button><h2>QRコードを読み取る</h2><span></span></div>
+    <div class="qr-stage">
+      <video id="qr-video" playsinline muted></video>
+      <div class="qr-frame"></div>
+      <p id="qr-status" class="qr-status">カメラを起動しています…</p>
+    </div>
+    <button class="btn wide" id="btn-qr-photo"><svg class="ico"><use href="#i-camera"/></svg>写真から読み取る</button>
+    <input type="file" id="qr-file" accept="image/*" hidden>
+    <p class="text-3 small">機器で <code>remota</code> を起動したときに表示される QR コードを読み取ります。</p>
   </dialog>
 
   <dialog id="dlg-switch" class="sheet">
     <form method="dialog">
-      <div class="grabber"></div>
-      <h2>セッション</h2>
+      <div class="sheet-head"><span></span><h2>セッション</h2><button value="new" class="link-btn strong">＋ 新規</button></div>
       <ul id="switch-list" class="switch-list"></ul>
-      <div class="sheet-actions">
-        <button value="new" class="btn">＋ 新規</button>
-        <button value="cancel" class="btn primary">閉じる</button>
-      </div>
     </form>
   </dialog>
 
   <dialog id="dlg-menu" class="sheet">
     <form method="dialog">
-      <div class="grabber"></div>
-      <h2 id="menu-title">セッション</h2>
+      <div class="sheet-head"><span></span><h2 id="menu-title">セッション</h2><button value="cancel" class="link-btn strong">完了</button></div>
       <div class="menu-grid">
-        <button value="text" class="btn">テキスト選択</button>
-        <button value="history" class="btn">送信履歴</button>
-        <button value="snippets" class="btn">定型文バー切替</button>
-        <button value="edit-snippets" class="btn">定型文を編集</button>
-        <button value="edit-keys" class="btn">キーバーを編集</button>
-        <button value="font-up" class="btn">文字を大きく</button>
-        <button value="font-down" class="btn">文字を小さく</button>
-        <button value="rename" class="btn">名前を変更</button>
-        <button value="kill" class="btn danger">セッションを終了</button>
+        <button value="text" class="menu-tile"><svg class="ico"><use href="#i-search"/></svg>検索・コピー</button>
+        <button value="history" class="menu-tile"><svg class="ico"><use href="#i-history"/></svg>送信履歴</button>
+        <button value="edit-snippets" class="menu-tile"><svg class="ico"><use href="#i-bolt"/></svg>定型文を編集</button>
+        <button value="edit-keys" class="menu-tile"><svg class="ico"><use href="#i-kbd"/></svg>キーバーを編集</button>
+        <button value="fav" class="menu-tile"><svg class="ico"><use href="#i-star"/></svg>お気に入り</button>
+        <button value="rename" class="menu-tile"><svg class="ico"><use href="#i-file"/></svg>名前を変更</button>
       </div>
-      <p class="muted small">ヒント: ターミナルを2本指でピンチすると文字サイズを変更できます。</p>
-      <div class="sheet-actions">
-        <button value="cancel" class="btn primary">閉じる</button>
+      <div class="group">
+        <button value="font-up" class="row row-btn"><span class="row-main">文字を大きく</span></button>
+        <button value="font-down" class="row row-btn"><span class="row-main">文字を小さく</span></button>
+        <button value="kill" class="row row-btn danger"><span class="row-main">セッションを終了</span></button>
       </div>
+      <p class="text-3 small center">ターミナルを2本指でピンチすると文字サイズを変更できます</p>
     </form>
+  </dialog>
+
+  <dialog id="dlg-git" class="sheet tall">
+    <div class="sheet-head"><button type="button" class="link-btn" data-close>閉じる</button><h2>変更</h2><button type="button" class="link-btn" id="btn-git-refresh">更新</button></div>
+    <div id="git-summary" class="git-summary"></div>
+    <ul id="git-files" class="file-list"></ul>
+    <div id="git-diff" class="code-view"></div>
+  </dialog>
+
+  <dialog id="dlg-files" class="sheet tall">
+    <div class="sheet-head"><button type="button" class="link-btn" data-close>閉じる</button><h2>ファイル</h2><button type="button" class="link-btn strong" id="btn-file-insert" hidden>入力欄へ</button></div>
+    <div id="file-crumbs" class="crumbs"></div>
+    <ul id="file-list" class="file-list"></ul>
+    <div id="file-view" class="code-view" hidden></div>
   </dialog>
 
   <dialog id="dlg-list" class="sheet">
     <form method="dialog">
-      <div class="grabber"></div>
-      <h2 id="list-title"></h2>
+      <div class="sheet-head"><span></span><h2 id="list-title"></h2><button value="cancel" class="link-btn strong">閉じる</button></div>
       <ul id="list-items" class="pick-list"></ul>
-      <div class="sheet-actions">
-        <button value="cancel" class="btn primary">閉じる</button>
-      </div>
     </form>
   </dialog>
 
-  <dialog id="dlg-text" class="sheet full">
-    <form method="dialog">
-      <div class="text-head">
-        <h2>テキスト</h2>
-        <button type="button" class="btn" id="btn-copy-all">すべてコピー</button>
-        <button value="cancel" class="btn primary">閉じる</button>
+  <dialog id="dlg-text" class="sheet tall">
+    <form method="dialog" class="text-form">
+      <div class="sheet-head"><button value="cancel" class="link-btn">閉じる</button><h2>テキスト</h2><button type="button" class="link-btn strong" id="btn-copy-all">すべてコピー</button></div>
+      <div class="search-row">
+        <svg class="ico tiny"><use href="#i-search"/></svg>
+        <input id="text-search" type="search" placeholder="検索" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <span id="text-count" class="text-3 small"></span>
+        <button type="button" class="icon-btn small" id="btn-text-prev" aria-label="前へ">↑</button>
+        <button type="button" class="icon-btn small" id="btn-text-next" aria-label="次へ">↓</button>
       </div>
       <pre id="text-view" class="text-view"></pre>
     </form>
@@ -218,104 +347,10 @@
 
   <dialog id="dlg-edit" class="sheet">
     <form method="dialog">
-      <div class="grabber"></div>
-      <h2 id="edit-title"></h2>
-      <p id="edit-help" class="muted small"></p>
+      <div class="sheet-head"><button value="cancel" class="link-btn" formnovalidate>キャンセル</button><h2 id="edit-title"></h2><button value="ok" class="link-btn strong">保存</button></div>
+      <p id="edit-help" class="text-2 small"></p>
       <textarea id="edit-text" rows="10" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
-      <div class="sheet-actions">
-        <button value="reset" class="btn" formnovalidate>初期値に戻す</button>
-        <button value="cancel" class="btn" formnovalidate>キャンセル</button>
-        <button value="ok" class="btn primary">保存</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-settings" class="sheet">
-    <form method="dialog">
-      <div class="grabber"></div>
-      <h2>設定</h2>
-      <div class="setting">
-        <div>
-          <strong>プッシュ通知</strong>
-          <p class="muted small" id="push-state"></p>
-        </div>
-        <button type="button" class="btn" id="btn-push">有効化</button>
-      </div>
-      <div class="setting">
-        <div><strong>通知テスト</strong></div>
-        <button type="button" class="btn" id="btn-push-test">送信</button>
-      </div>
-      <label class="setting">
-        <div><strong>テーマ</strong></div>
-        <select id="set-theme">
-          <option value="midnight">Midnight</option>
-          <option value="dracula">Dracula</option>
-          <option value="solarized">Solarized Dark</option>
-          <option value="light">Light</option>
-        </select>
-      </label>
-      <h3 class="setting-head">見やすさ</h3>
-      <label class="setting">
-        <div><strong>コントラスト補正</strong><p class="muted small">エージェントの薄いグレー文字を読みやすく補正</p></div>
-        <select id="set-contrast">
-          <option value="1">オフ</option>
-          <option value="4.5">標準</option>
-          <option value="7">高</option>
-        </select>
-      </label>
-      <label class="setting">
-        <div><strong>行間</strong></div>
-        <select id="set-line-height">
-          <option value="1">詰める</option>
-          <option value="1.15">標準</option>
-          <option value="1.3">広い</option>
-        </select>
-      </label>
-      <label class="setting">
-        <div><strong>ボタン・メニューの文字</strong><p class="muted small">ターミナルの文字はピンチで調整</p></div>
-        <select id="set-ui-scale">
-          <option value="1">標準</option>
-          <option value="1.12">大</option>
-          <option value="1.25">特大</option>
-        </select>
-      </label>
-      <label class="setting">
-        <div><strong>文字を太く</strong></div>
-        <input type="checkbox" id="set-bold">
-      </label>
-      <h3 class="setting-head">入力</h3>
-      <label class="setting">
-        <div><strong>音声入力の言語</strong></div>
-        <select id="set-lang">
-          <option value="ja-JP">日本語</option>
-          <option value="en-US">English</option>
-          <option value="zh-CN">中文</option>
-          <option value="ko-KR">한국어</option>
-        </select>
-      </label>
-      <label class="setting">
-        <div><strong>Enterで送信</strong><p class="muted small">オフにすると改行。送信は↑ボタン</p></div>
-        <input type="checkbox" id="set-enter-send">
-      </label>
-      <label class="setting">
-        <div><strong>送信時に自動でEnter</strong><p class="muted small">↑ボタンを長押しするとEnterなしで送信</p></div>
-        <input type="checkbox" id="set-auto-enter">
-      </label>
-      <label class="setting">
-        <div><strong>承認ボタンを表示</strong><p class="muted small">画面の選択肢を読み取ってボタン化します</p></div>
-        <input type="checkbox" id="set-choices">
-      </label>
-      <label class="setting">
-        <div><strong>触覚フィードバック</strong><p class="muted small">対応端末のみ</p></div>
-        <input type="checkbox" id="set-haptics">
-      </label>
-      <div class="setting">
-        <div><strong>エージェント連携</strong><p class="muted small">サーバーで <code>remota hooks</code> を実行すると Claude Code の完了 / 承認待ちを確実に通知できます。</p></div>
-      </div>
-      <div class="sheet-actions">
-        <button type="button" class="btn danger" id="btn-logout">登録をすべて削除</button>
-        <button value="ok" class="btn primary">閉じる</button>
-      </div>
+      <button value="reset" class="link-btn" formnovalidate>初期値に戻す</button>
     </form>
   </dialog>
 
@@ -324,6 +359,7 @@
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <script src="/vendor/addon-web-links.js"></script>
+  <script src="/vendor/jsqr.js" defer></script>
   <script src="/app.js"></script>
 </body>
 </html>

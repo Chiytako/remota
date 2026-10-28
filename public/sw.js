@@ -1,7 +1,7 @@
 'use strict';
 
-const CACHE = 'remota-v5';
-const SHELL = ['/', '/style.css', '/app.js', '/vendor/xterm.js', '/vendor/xterm.css', '/vendor/addon-fit.js', '/vendor/addon-web-links.js', '/icons/icon.svg'];
+const CACHE = 'remota-v6';
+const SHELL = ['/', '/style.css', '/app.js', '/vendor/xterm.js', '/vendor/xterm.css', '/vendor/addon-fit.js', '/vendor/addon-web-links.js', '/vendor/jsqr.js', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));

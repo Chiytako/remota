@@ -205,3 +205,38 @@ test('push subscriptions carry the phone\'s own VAPID keys; bad keys are rejecte
   assert.strictEqual(stored[0].device, 'dev1');
   await fetch(`${base}/api/push/unsubscribe`, { method: 'POST', headers: auth(), body: JSON.stringify({ endpoint: sub.endpoint }) });
 });
+
+test('git changes, file browsing and machine stats for a session', async () => {
+  const repo = fs.mkdtempSync(path.join(home, 'repo-'));
+  const { execFileSync } = require('child_process');
+  const git = (...a) => execFileSync('git', a, { cwd: repo, env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+  git('init', '-q');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  git('add', '.');
+  git('commit', '-qm', 'first');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\ntwo\n');
+  fs.writeFileSync(path.join(repo, 'new.txt'), 'fresh\n');
+  fs.symlinkSync('/etc', path.join(repo, 'escape'));
+
+  const s = await (await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth(), body: JSON.stringify({ cwd: repo }) })).json();
+  const g = await (await fetch(`${base}/api/sessions/${s.id}/git`, { headers: auth() })).json();
+  assert.strictEqual(g.repo, true);
+  assert.deepStrictEqual(g.files.map((f) => `${f.code} ${f.path}`).sort(), ['?? escape', '?? new.txt', 'M a.txt']);
+  assert.match(g.diff, /\+two/);
+  assert.match(g.diff, /\+fresh/);
+  assert.strictEqual(g.commits[0].subject, 'first');
+
+  const dir = await (await fetch(`${base}/api/sessions/${s.id}/files`, { headers: auth() })).json();
+  assert.ok(dir.entries.some((e) => e.name === 'a.txt'));
+  assert.ok(!dir.entries.some((e) => e.name === '.git'), '.git is hidden');
+  const file = await (await fetch(`${base}/api/sessions/${s.id}/files?path=a.txt`, { headers: auth() })).json();
+  assert.strictEqual(file.content, 'one\ntwo\n');
+  for (const bad of ['../', 'escape/passwd', '/etc/passwd']) {
+    const r = await fetch(`${base}/api/sessions/${s.id}/files?path=${encodeURIComponent(bad)}`, { headers: auth() });
+    assert.ok([403, 404].includes(r.status), `${bad} must stay inside the working folder (got ${r.status})`);
+  }
+
+  const info = await (await fetch(`${base}/api/info`, { headers: auth() })).json();
+  assert.ok(info.stats.cpus > 0 && info.stats.mem.total > 0);
+  await fetch(`${base}/api/sessions/${s.id}`, { method: 'DELETE', headers: auth() });
+});
