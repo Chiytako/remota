@@ -214,6 +214,16 @@ function createServer(config) {
     }
     if (route === 'GET /api/sessions') return send(res, 200, sessions.list());
 
+    // The user's own tmux sessions (started outside Remota), to attach to from the phone.
+    if (route === 'GET /api/tmux') return send(res, 200, sessions.listUserTmux());
+    if (route === 'POST /api/tmux/attach') {
+      try {
+        return send(res, 201, sessions.attachUserTmux((await readJsonBody(req)).name).toJSON());
+      } catch (err) {
+        return send(res, 400, { error: err.message });
+      }
+    }
+
     // Coding agents on this machine and whether their notifications are wired to Remota.
     if (route === 'GET /api/agents') return send(res, 200, agents.list());
     const am = url.pathname.match(/^\/api\/agents\/([a-z]+)\/(install|uninstall)$/);

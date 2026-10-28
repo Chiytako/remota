@@ -251,6 +251,7 @@
     <form method="dialog" id="new-form">
       <div class="sheet-head"><button value="cancel" class="link-btn" formnovalidate>キャンセル</button><h2>新規セッション</h2><button value="ok" class="link-btn strong" id="new-submit">起動</button></div>
       <div class="field" id="node-field"><span class="field-label">機器</span><div id="node-list" class="chips"></div></div>
+      <div class="field" id="tmux-field" hidden><span class="field-label">実行中の tmux に接続</span><ul id="tmux-list" class="tmux-list"></ul></div>
       <div class="field"><span class="field-label">起動するもの</span><div id="preset-list" class="chips"></div>
         <input id="new-command" placeholder="コマンド（空欄ならシェル）" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
       <div class="field"><span class="field-label">作業フォルダ</span>
@@ -312,7 +313,7 @@
       <div class="group">
         <button value="font-up" class="row row-btn"><span class="row-main">文字を大きく</span></button>
         <button value="font-down" class="row row-btn"><span class="row-main">文字を小さく</span></button>
-        <button value="kill" class="row row-btn danger"><span class="row-main">セッションを終了</span></button>
+        <button value="kill" class="row row-btn danger"><span class="row-main" id="kill-label">セッションを終了</span></button>
       </div>
       <p class="text-3 small center">ターミナルを2本指でピンチすると文字サイズを変更できます</p>
     </form>

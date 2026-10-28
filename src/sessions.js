@@ -13,6 +13,7 @@ const SESSIONS_FILE = path.join(CONFIG_DIR, 'sessions.json');
 // A dedicated tmux socket keeps Remota's sessions apart from the user's own tmux server.
 const TMUX_SOCKET = 'remota';
 const TMUX_PREFIX = 'remota_';
+const FIELD = '<|remota|>';
 
 function hasTmux() {
   try {
@@ -23,13 +24,14 @@ function hasTmux() {
   }
 }
 
-function tmux(args, opts = {}) {
-  return execFileSync('tmux', ['-L', TMUX_SOCKET, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts });
+// `socket` null means the user's own tmux server (the one plain `tmux` talks to).
+function tmux(args, opts = {}, socket = TMUX_SOCKET) {
+  return execFileSync('tmux', [...(socket ? ['-L', socket] : []), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts });
 }
 
-function liveTmuxSessions() {
+function liveTmuxSessions(socket = TMUX_SOCKET) {
   try {
-    return new Set(tmux(['list-sessions', '-F', '#{session_name}']).split('\n').filter(Boolean));
+    return new Set(tmux(['list-sessions', '-F', '#{session_name}'], {}, socket).split('\n').filter(Boolean));
   } catch {
     return new Set();
   }
@@ -50,6 +52,8 @@ class Session extends EventEmitter {
     this.name = meta.name;
     this.cwd = meta.cwd;
     this.command = meta.command || '';
+    // Name of a tmux session the user started themselves (outside Remota), or null for Remota's own.
+    this.external = meta.external || null;
     this.createdAt = meta.createdAt || Date.now();
     this.useTmux = manager.useTmux;
     this.buffer = '';
@@ -73,7 +77,21 @@ class Session extends EventEmitter {
   }
 
   get tmuxName() {
-    return TMUX_PREFIX + this.id;
+    return this.external || TMUX_PREFIX + this.id;
+  }
+
+  // The user's own sessions live on their default tmux server; Remota's on its private socket.
+  get socket() {
+    return this.external ? null : TMUX_SOCKET;
+  }
+
+  // "=name" matches the session name exactly (a bare name could match by prefix).
+  get target() {
+    return `=${this.tmuxName}`;
+  }
+
+  tmux(args, opts) {
+    return tmux(args, opts, this.socket);
   }
 
   start({ attachExisting = false } = {}) {
@@ -81,7 +99,7 @@ class Session extends EventEmitter {
     let file;
     let args;
     if (this.useTmux) {
-      if (!attachExisting) {
+      if (!attachExisting && !this.external) {
         const create = ['new-session', '-d', '-s', this.tmuxName, '-c', this.cwd, '-x', String(this.cols), '-y', String(this.rows), '-e', `REMOTA_SESSION=${this.id}`];
         tmux(create, { env });
         // A phone screen has no room for tmux's status bar; scrollback is handled by copy-mode.
@@ -91,13 +109,14 @@ class Session extends EventEmitter {
         if (this.command) tmux(['send-keys', '-t', this.tmuxName, this.command, 'Enter']);
       }
       file = 'tmux';
-      args = ['-L', TMUX_SOCKET, '-u', 'attach-session', '-t', this.tmuxName];
+      args = [...(this.socket ? ['-L', this.socket] : []), '-u', 'attach-session', '-t', this.target];
     } else {
       file = this.manager.config.shell;
       args = ['-l'];
     }
 
-    this.pty = pty.spawn(file, args, { name: 'xterm-256color', cols: this.cols, rows: this.rows, cwd: this.cwd, env });
+    const cwd = fs.existsSync(this.cwd) ? this.cwd : require('os').homedir();
+    this.pty = pty.spawn(file, args, { name: 'xterm-256color', cols: this.cols, rows: this.rows, cwd, env });
     if (!this.useTmux && this.command) this.pty.write(`${this.command}\r`);
 
     this.pty.onData((data) => this.onOutput(data));
@@ -164,7 +183,7 @@ class Session extends EventEmitter {
   redraw() {
     if (!this.useTmux || this.exited || !this.pty._pty) return;
     try {
-      tmux(['refresh-client', '-t', this.pty._pty]);
+      this.tmux(['refresh-client', '-t', this.pty._pty]);
     } catch {
       // client not registered yet
     }
@@ -175,12 +194,12 @@ class Session extends EventEmitter {
     if (!this.useTmux || this.exited) return false;
     try {
       if (direction === 'exit') {
-        tmux(['send-keys', '-t', this.tmuxName, '-X', 'cancel']);
+        this.tmux(['send-keys', '-t', `${this.target}:`, '-X', 'cancel']);
         return true;
       }
-      tmux(['copy-mode', '-e', '-t', this.tmuxName]);
+      this.tmux(['copy-mode', '-e', '-t', `${this.target}:`]);
       const cmd = direction === 'up' ? 'scroll-up' : 'scroll-down';
-      tmux(['send-keys', '-t', this.tmuxName, '-X', '-N', String(Math.max(1, Math.min(200, lines | 0))), cmd]);
+      this.tmux(['send-keys', '-t', `${this.target}:`, '-X', '-N', String(Math.max(1, Math.min(200, lines | 0))), cmd]);
       return true;
     } catch {
       return false;
@@ -215,7 +234,7 @@ class Session extends EventEmitter {
   text(lines = 3000) {
     if (this.useTmux && !this.exited) {
       try {
-        return tmux(['capture-pane', '-p', '-J', '-t', this.tmuxName, '-S', `-${Math.max(10, Math.min(50000, lines | 0))}`]);
+        return this.tmux(['capture-pane', '-p', '-J', '-t', `${this.target}:`, '-S', `-${Math.max(10, Math.min(50000, lines | 0))}`]);
       } catch {
         // fall through to the raw buffer
       }
@@ -237,7 +256,8 @@ class Session extends EventEmitter {
   kill() {
     if (this.useTmux) {
       try {
-        tmux(['kill-session', '-t', this.tmuxName]);
+        // Never end a session the user started themselves; leaving Remota only detaches from it.
+        if (!this.external) this.tmux(['kill-session', '-t', this.target]);
       } catch {
         // already gone
       }
@@ -256,12 +276,13 @@ class Session extends EventEmitter {
       lastOutputAt: this.lastOutputAt,
       clients: this.clients.size,
       tmux: this.useTmux,
+      external: this.external,
       preview: lastLines(this.buffer.slice(-4000), 2),
     };
   }
 
   meta() {
-    return { id: this.id, name: this.name, cwd: this.cwd, command: this.command, createdAt: this.createdAt };
+    return { id: this.id, name: this.name, cwd: this.cwd, command: this.command, createdAt: this.createdAt, external: this.external };
   }
 }
 
@@ -279,8 +300,9 @@ class SessionManager extends EventEmitter {
   restore() {
     if (!this.useTmux) return;
     const live = liveTmuxSessions();
+    const userLive = liveTmuxSessions(null);
     for (const meta of readJson(SESSIONS_FILE, [])) {
-      if (!live.has(TMUX_PREFIX + meta.id)) continue;
+      if (meta.external ? !userLive.has(meta.external) : !live.has(TMUX_PREFIX + meta.id)) continue;
       const session = new Session(this, meta);
       session.start({ attachExisting: true });
       this.sessions.set(session.id, session);
@@ -290,6 +312,43 @@ class SessionManager extends EventEmitter {
 
   list() {
     return [...this.sessions.values()].sort((a, b) => a.createdAt - b.createdAt).map((s) => s.toJSON());
+  }
+
+  // tmux sessions the user started themselves (plain `tmux`), which Remota can attach to.
+  listUserTmux() {
+    if (!this.useTmux) return { available: false, sessions: [] };
+    let out = '';
+    try {
+      // tmux rewrites tabs and control characters in its output, so fields are split on a marker.
+      out = tmux(['list-sessions', '-F', ['#{session_name}', '#{session_windows}', '#{session_attached}', '#{session_activity}', '#{pane_current_path}', '#{pane_current_command}'].join(FIELD)], {}, null);
+    } catch {
+      // no tmux server running for this user
+    }
+    const attached = new Map([...this.sessions.values()].filter((s) => s.external).map((s) => [s.external, s.id]));
+    const sessions = out.split('\n').filter(Boolean).map((line) => {
+      const [name, windows, clients, activity, cwd, command] = line.split(FIELD);
+      return { name, windows: Number(windows), clients: Number(clients), activity: Number(activity) * 1000, cwd, command, remotaId: attached.get(name) || null };
+    });
+    return { available: true, sessions };
+  }
+
+  attachUserTmux(name) {
+    name = String(name || '');
+    const found = this.listUserTmux().sessions.find((x) => x.name === name);
+    if (!found) throw new Error(`tmux セッション「${name}」が見つかりません`);
+    if (found.remotaId) return this.get(found.remotaId);
+    const session = new Session(this, {
+      id: crypto.randomBytes(4).toString('hex'),
+      name: name.slice(0, 60),
+      cwd: found.cwd || require('os').homedir(),
+      command: found.command === 'bash' || found.command === 'zsh' || found.command === 'fish' ? '' : found.command,
+      external: name,
+    });
+    session.start({ attachExisting: true });
+    this.sessions.set(session.id, session);
+    this.persist();
+    this.emit('change', session);
+    return session;
   }
 
   get(id) {
@@ -333,7 +392,7 @@ class SessionManager extends EventEmitter {
 
   onSessionExit(session) {
     // With tmux, the attach client can die while the tmux session lives on; reattach in that case.
-    if (session.useTmux && liveTmuxSessions().has(session.tmuxName) && this.sessions.has(session.id)) {
+    if (session.useTmux && liveTmuxSessions(session.socket).has(session.tmuxName) && this.sessions.has(session.id)) {
       session.exited = false;
       session.status = 'running';
       setTimeout(() => this.sessions.has(session.id) && session.start({ attachExisting: true }), 300);

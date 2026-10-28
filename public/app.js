@@ -641,6 +641,7 @@ function sessionCard(s) {
     <span class="meta"></span>
     ${s.preview ? '<span class="preview"></span>' : ''}`;
   li.querySelector('.name').textContent = s.name;
+  if (s.external) li.querySelector('.name').insertAdjacentHTML('beforeend', '<span class="tmux-tag">tmux</span>');
   li.querySelector('.meta').textContent = `${s.command || 'shell'} · ${s.cwd} · ${timeAgo(s.lastOutputAt)}`;
   if (s.preview) li.querySelector('.preview').textContent = s.preview;
   li.addEventListener('click', () => openSession(s.node, s.id));
@@ -839,8 +840,42 @@ async function openNewDialog(nodeId) {
   if (preferred) await pickNode(preferred);
 }
 
+// tmux sessions the user started on that machine themselves; tapping one attaches to it.
+async function loadUserTmux(id) {
+  const field = $('#tmux-field');
+  const list = $('#tmux-list');
+  field.hidden = true;
+  let data;
+  try {
+    data = await devApi(id, 'tmux', { timeout: 6000 });
+  } catch {
+    return;
+  }
+  if (state.newNode !== id || !data.available || !data.sessions.length) return;
+  list.replaceChildren();
+  for (const t of data.sessions) {
+    const li = document.createElement('li');
+    li.innerHTML = `${agentIcon(agentKind(t.command))}<div class="row-main"><strong></strong><small></small></div><svg class="ico chev"><use href="#i-chev"/></svg>`;
+    li.querySelector('strong').textContent = t.name;
+    li.querySelector('small').textContent = `${t.remotaId ? '接続中 · ' : t.clients ? 'PC で表示中 · ' : ''}${t.windows}ウィンドウ · ${t.command || ''} · ${t.cwd || ''}`;
+    li.addEventListener('click', async () => {
+      try {
+        const s = t.remotaId ? { id: t.remotaId } : await devApi(id, 'tmux/attach', { method: 'POST', body: JSON.stringify({ name: t.name }) });
+        $('#dlg-new').close();
+        openSession(id, s.id);
+      } catch (ex) {
+        $('#new-error').textContent = ex.message;
+        $('#new-error').hidden = false;
+      }
+    });
+    list.append(li);
+  }
+  field.hidden = false;
+}
+
 // Presets and the default directory come from the chosen machine itself.
 async function loadNodeDefaults(id) {
+  loadUserTmux(id);
   const live = state.live.get(id) || {};
   const info = live.info || (await devApi(id, 'info').catch(() => null));
   // Only agents installed on that machine are offered.
@@ -1945,7 +1980,11 @@ $('#dlg-switch').addEventListener('close', () => {
   $('#dlg-switch').returnValue = '';
 });
 
-$('#btn-term-menu').addEventListener('click', () => $('#dlg-menu').showModal());
+$('#btn-term-menu').addEventListener('click', () => {
+  const s = state.sessions.find((x) => x.node === term.node && x.id === term.sessionId);
+  $('#kill-label').textContent = s && s.external ? '切断（tmux セッションは残す）' : 'セッションを終了';
+  $('#dlg-menu').showModal();
+});
 
 $('#dlg-menu').addEventListener('close', async () => {
   const action = $('#dlg-menu').returnValue;
@@ -1973,7 +2012,11 @@ $('#dlg-menu').addEventListener('close', async () => {
       $('#term-name').textContent = name;
     }
   } else if (action === 'kill') {
-    if (confirm('このセッションを終了しますか？実行中のプロセスも終了します。')) {
+    const s = state.sessions.find((x) => x.node === node && x.id === id);
+    const question = s && s.external
+      ? `Remota から切断しますか？tmux セッション「${s.external}」は PC 側でそのまま動き続けます。`
+      : 'このセッションを終了しますか？実行中のプロセスも終了します。';
+    if (confirm(question)) {
       await devApi(node, `sessions/${id}`, { method: 'DELETE' });
       prefs.remove(`draft.${keyOf(node, id)}`);
       location.hash = '#/';
