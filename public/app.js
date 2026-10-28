@@ -256,6 +256,7 @@ async function request(dev, path, opts = {}) {
   // A machine may answer on several addresses (home LAN, VPN…); try the others when one is unreachable
   // and remember the one that worked.
   const urls = [dev.url, ...(dev.alts || []).filter((u) => u !== dev.url)];
+  const tried = [];
   for (let i = 0; ; i++) {
     try {
       const data = await requestAt(dev, urls[i], path, opts);
@@ -265,7 +266,12 @@ async function request(dev, path, opts = {}) {
       }
       return data;
     } catch (ex) {
-      if (ex.status !== 0 || i === urls.length - 1 || /鍵が登録時と一致/.test(ex.message)) throw ex;
+      if (ex.status !== 0 || /鍵が登録時と一致/.test(ex.message)) throw ex;
+      tried.push(`${new URL(urls[i]).host}: ${ex.message}`);
+      if (i === urls.length - 1) {
+        // Say which addresses were tried, so a firewall or wrong network is easy to spot.
+        throw new DeviceError(`${tried.join(' / ')}。機器と同じネットワークにいるか、機器で \`remota doctor\` を実行して確認してください。`, 0);
+      }
     }
   }
 }

@@ -23,6 +23,8 @@ const HELP = `remota — スマホからAIコーディングエージェント�
   remota service install         バックグラウンドのサービスとして登録（ログイン/起動時に自動起動・自動復帰）
   remota service uninstall|status|logs|restart
 
+  remota doctor                  スマホからつながらないときの診断（サーバー・アドレス・ファイアウォール）
+
   remota ca                      HTTPS 用の証明書（認証局）の情報
   remota ca export <file>        証明書を書き出す（他の機器で共通にするため）
   remota ca import <file>        書き出した証明書を読み込む
@@ -32,14 +34,20 @@ const HELP = `remota — スマホからAIコーディングエージェント�
 設定ファイル: ${CONFIG_FILE}
 `;
 
+// Interfaces a phone can never reach: container and VM bridges.
+const VIRTUAL_IF = /^(docker|br-|veth|virbr|vnet|cni|flannel|cali|lxc|lxdbr|podman|vboxnet|vmnet|kube)/;
+
+// Addresses to offer the phone, most likely first: private LAN, then VPN (100.64/10), then others.
 function lanAddresses() {
   const out = [];
-  for (const list of Object.values(os.networkInterfaces())) {
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    if (VIRTUAL_IF.test(name)) continue;
     for (const addr of list || []) {
-      if (addr.family === 'IPv4' && !addr.internal) out.push(addr.address);
+      if (addr.family === 'IPv4' && !addr.internal && !addr.address.startsWith('169.254.')) out.push(addr.address);
     }
   }
-  return out;
+  const rank = (ip) => (/^(192\.168|10)\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 0 : /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip) ? 1 : 2);
+  return out.sort((a, b) => rank(a) - rank(b));
 }
 
 function builtinTls(config) {
@@ -220,6 +228,88 @@ function hooks(args) {
   if (sub === 'install') console.log('\n起動中のエージェントは再起動すると反映されます。');
 }
 
+// Checks the usual reasons a phone can't reach this machine and says what to do about each.
+async function doctor(config) {
+  const { execFileSync } = require('child_process');
+  const sh = (cmd, args) => {
+    try {
+      return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000 }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const ok = (msg) => console.log(`  ✓ ${msg}`);
+  const ng = (msg, fix) => console.log(`  ✗ ${msg}${fix ? `\n      → ${fix}` : ''}`);
+  console.log('Remota の診断\n');
+
+  const rev = sh('git', ['-C', require('path').resolve(__dirname, '..'), 'rev-parse', '--short', 'HEAD']);
+  console.log(`  バージョン: ${rev || '不明'}  Node.js ${process.version}`);
+
+  let svc = null;
+  try {
+    svc = require('../src/service').manager().status();
+  } catch {
+    // no service manager here
+  }
+  if (svc === 'active' || svc === 'installed') ok(`サービス: ${svc}`);
+  else console.log(`  - サービス: ${svc || '未登録'}（常駐させるには: node bin/remota.js service install）`);
+
+  // 1) Is the server answering on this machine at all?
+  const scheme = builtinTls(config) || (config.tls && config.tls.cert) ? 'https' : 'http';
+  const ping = (host) =>
+    new Promise((resolve) => {
+      const lib = require(scheme);
+      const req = lib.get({ host, port: config.port, path: '/api/ping', rejectUnauthorized: false, timeout: 3000 }, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200 ? 'ok' : `HTTP ${res.statusCode}`);
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', (e) => resolve(e.code || e.message));
+    });
+  const local = await ping('127.0.0.1');
+  if (local === 'ok') ok(`サーバーが応答しています（${scheme}://127.0.0.1:${config.port}）`);
+  else ng(`サーバーが応答しません（${local}）`, 'node bin/remota.js service install（または node bin/remota.js start）で起動してください');
+
+  // 2) Which address does it listen on?
+  if (config.host !== '0.0.0.0' && config.host !== '::') ng(`待ち受けが ${config.host} に限定されています`, '設定ファイルの "host" を "0.0.0.0" にしてください');
+
+  // 3) Each address the phone will try, from this machine's side.
+  const addrs = lanAddresses();
+  if (!addrs.length) ng('LAN のアドレスが見つかりません', 'ネットワークに接続されているか確認してください');
+  for (const a of addrs) {
+    const r = await ping(a);
+    if (r === 'ok') ok(`${a}:${config.port} で応答`);
+    else ng(`${a}:${config.port} で応答しません（${r}）`);
+  }
+  const skipped = Object.keys(os.networkInterfaces()).filter((n) => VIRTUAL_IF.test(n));
+  if (skipped.length) console.log(`  - 仮想ネットワークは除外: ${skipped.join(', ')}`);
+
+  // 4) Firewalls that drop incoming connections (the usual cause of "応答がありません").
+  const active = (unit) => sh('systemctl', ['is-active', unit]) === 'active';
+  const ports = `${config.port}${builtinTls(config) && config.httpPort !== false ? `, ${config.httpPort || config.port - 1}` : ''}`;
+  // `ufw status` needs root; /etc/ufw/ufw.conf tells whether it is switched on without it.
+  let ufwOn = null;
+  try {
+    ufwOn = /^\s*ENABLED\s*=\s*yes/m.test(fs.readFileSync('/etc/ufw/ufw.conf', 'utf8'));
+  } catch {
+    // ufw not installed
+  }
+  if (ufwOn !== null && active('ufw')) {
+    if (!ufwOn) ok('ufw: 無効');
+    else ng(`ufw が有効です（ポート ${ports}/tcp が許可されていないと、スマホからは「応答がありません」になります）`, `sudo ufw allow ${ports.replace(', ', ':')}/tcp`);
+  } else if (active('firewalld')) {
+    ng(`firewalld が有効です（ポート ${ports}/tcp の許可が必要な場合があります）`, `sudo firewall-cmd --permanent --add-port=${ports.replace(', ', '-')}/tcp && sudo firewall-cmd --reload`);
+  } else if (sh('nft', ['list', 'ruleset']) && /policy drop/.test(sh('nft', ['list', 'ruleset']) || '')) {
+    ng('nftables に既定で破棄するルールがあります', `ポート ${ports}/tcp への受信を許可してください`);
+  } else {
+    ok('有効なファイアウォール（ufw / firewalld）は見つかりません');
+  }
+
+  console.log('\nスマホ側の確認:');
+  console.log(`  - スマホがこの機器と同じ Wi-Fi（または同じ VPN）につながっているか`);
+  if (addrs[0]) console.log(`  - スマホのブラウザで http://${addrs[0]}:${config.httpPort || config.port - 1}/setup が開けるか（開ければネットワークは届いています）`);
+}
+
 function service(args) {
   const svc = require('../src/service');
   const [sub = 'status'] = args;
@@ -320,6 +410,9 @@ async function main() {
       break;
     case 'ca':
       ca(args);
+      break;
+    case 'doctor':
+      await doctor(config);
       break;
     case 'service':
       service(args);
