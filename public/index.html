@@ -38,7 +38,7 @@
     <div class="login-box">
       <img src="/icons/icon.svg" alt="" class="login-logo">
       <h1>Remota</h1>
-      <p class="muted">サーバー起動時に表示されたトークン、またはQRコードのURLでログインします。</p>
+      <p class="muted">この機器で <code>remota</code> を起動したときに表示されたトークンを入力するか、表示されたQRコードを読み取ってください。</p>
       <form id="login-form">
         <input id="login-token" type="password" autocomplete="current-password" placeholder="アクセストークン" required>
         <button type="submit" class="btn primary">ログイン</button>
@@ -144,14 +144,16 @@
       <h2>機器の管理</h2>
       <ul id="device-list" class="device-list"></ul>
       <h3 class="setting-head">機器を追加</h3>
-      <p class="muted small">追加する機器でも Remota を起動し、その機器の URL と <code>remota token</code> で表示されるトークンを入力します。この画面のサーバーが中継するので、スマホからのログインと通知の設定は1回で済みます。</p>
+      <p class="muted small">追加する機器で Remota を起動し、表示された URL（<code>…/#token=…</code> 付き）をそのまま貼り付けてください。スマホが各機器に直接つなぐので、どの機器が止まっていても他の機器は使えます。</p>
     </form>
     <form id="dev-form" class="dev-form">
       <input id="dev-name" placeholder="名前（例: 自宅Mac、GPUサーバー）" autocapitalize="off" autocorrect="off">
-      <input id="dev-url" placeholder="URL（例: http://192.168.1.20:7681）" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <input id="dev-token" type="password" placeholder="その機器のアクセストークン" required autocomplete="off">
+      <input id="dev-url" placeholder="URL（例: http://192.168.1.20:7681/#token=…）" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <input id="dev-token" type="password" placeholder="トークン（URLに含まれていれば不要）" autocomplete="off">
       <p id="dev-error" class="error" hidden></p>
       <div class="sheet-actions">
+        <button type="button" class="btn" id="btn-dev-export">書き出し</button>
+        <button type="button" class="btn" id="btn-dev-import">読み込み</button>
         <button type="button" class="btn" onclick="this.closest('dialog').close()">閉じる</button>
         <button type="submit" class="btn primary" id="dev-add">追加</button>
       </div>
@@ -311,7 +313,7 @@
         <div><strong>エージェント連携</strong><p class="muted small">サーバーで <code>remota hooks</code> を実行すると Claude Code の完了 / 承認待ちを確実に通知できます。</p></div>
       </div>
       <div class="sheet-actions">
-        <button type="button" class="btn danger" id="btn-logout">ログアウト</button>
+        <button type="button" class="btn danger" id="btn-logout">登録をすべて削除</button>
         <button value="ok" class="btn primary">閉じる</button>
       </div>
     </form>

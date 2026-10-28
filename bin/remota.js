@@ -33,12 +33,12 @@ function urls(config, useTls) {
   const scheme = useTls ? 'https' : 'http';
   const hosts = config.host === '0.0.0.0' ? lanAddresses() : [config.host];
   if (!hosts.length) hosts.push('localhost');
-  return hosts.map((h) => `${scheme}://${h}:${config.port}/?token=${encodeURIComponent(config.token)}`);
+  return hosts.map((h) => `${scheme}://${h}:${config.port}/#token=${encodeURIComponent(config.token)}`);
 }
 
 function printUrls(config, useTls) {
   const list = urls(config, useTls);
-  console.log('\nスマホでこのURLを開く（またはQRを読み取る）:');
+  console.log('\nスマホでこのURLを開く（またはQRを読み取る）。2台目以降は、アプリの「機器を追加」にこのURLを貼り付け:');
   for (const u of list) console.log(`  ${u}`);
   require('qrcode-terminal').generate(list[0], { small: true }, (qr) => console.log(qr));
   console.log('ホーム画面に追加するとアプリとして使えます（iOSの通知はHTTPS + ホーム画面追加が必要）。\n');

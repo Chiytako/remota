@@ -119,21 +119,6 @@ function randomId() {
 
 // ---------- small helpers ----------
 
-async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { ...(opts.body && !(opts.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers || {}) },
-    credentials: 'same-origin',
-  });
-  if (res.status === 401 && path !== '/api/login') {
-    showLogin();
-    throw new Error('unauthorized');
-  }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
-
 let toastTimer;
 function toast(msg, { ms = 2200, onClick = null } = {}) {
   const el = $('#toast');
@@ -213,19 +198,94 @@ function applyTheme() {
   if (term.instance) term.instance.options.theme = theme;
 }
 
+// ---------- devices: the machines this phone talks to, stored on the phone ----------
+
+// There is no central server: each machine runs Remota on its own and the app talks to every one
+// of them directly, authenticating with that machine's token.
+const devices = {
+  list: prefs.get('devices', []),
+  get(id) {
+    return this.list.find((d) => d.id === id);
+  },
+  save() {
+    prefs.set('devices', this.list);
+    publishDeviceNames();
+  },
+};
+
+function normalizeDeviceUrl(raw) {
+  let url;
+  try {
+    url = new URL(String(raw || '').trim());
+  } catch {
+    throw new Error('URLの形式が正しくありません（例: http://192.168.1.20:7681）');
+  }
+  if (!/^https?:$/.test(url.protocol)) throw new Error('http:// または https:// で始まるURLを指定してください');
+  // A page loaded over HTTPS may not call plain-HTTP machines (mixed content).
+  if (location.protocol === 'https:' && url.protocol === 'http:') {
+    throw new Error('このアプリはHTTPSで開かれているため、http:// の機器には接続できません。機器側もHTTPS（Tailscale serve など）にしてください');
+  }
+  const token = new URLSearchParams(url.hash.slice(1)).get('token') || url.searchParams.get('token') || '';
+  return { url: url.origin, token };
+}
+
+class DeviceError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request(dev, path, opts = {}) {
+  if (!dev) throw new DeviceError('機器が見つかりません', 404);
+  let res;
+  try {
+    res = await fetch(`${dev.url}/api/${path}`, {
+      method: opts.method || 'GET',
+      body: opts.body,
+      headers: {
+        Authorization: `Bearer ${dev.token}`,
+        ...(opts.body && !(opts.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.headers || {}),
+      },
+      signal: AbortSignal.timeout ? AbortSignal.timeout(opts.timeout || 20000) : undefined,
+    });
+  } catch (ex) {
+    throw new DeviceError(ex.name === 'TimeoutError' ? '応答がありません' : '接続できません', 0);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new DeviceError('トークンが違います', 401);
+  if (res.status === 429) throw new DeviceError('試行回数が多すぎます。しばらく待ってください', 429);
+  if (!res.ok) throw new DeviceError(data.error || `HTTP ${res.status}`, res.status);
+  return data;
+}
+
+function devApi(id, path, opts) {
+  return request(devices.get(id), path, opts);
+}
+
+// The service worker shows pushes from every machine and needs their names; it can't read
+// localStorage, so the names are handed over through the Cache API.
+function publishDeviceNames() {
+  if (!('caches' in window)) return;
+  const names = Object.fromEntries(devices.list.map((d) => [d.id, d.name]));
+  caches.open('remota-meta').then((c) => c.put('/__remota/devices.json', new Response(JSON.stringify(names)))).catch(() => {});
+}
+
 // ---------- state ----------
 
 const state = {
-  info: null,
   sessions: [],
   statuses: new Map(),
   nodes: [],
-  newNode: 'local',
+  // Per-device reachability, latency, info and sessions from the last poll.
+  live: new Map(),
+  newNode: null,
   pollTimer: null,
   presetIndex: 0,
 };
 
-// ---------- login ----------
+// ---------- first run: register the machine this app was opened from ----------
 
 function showLogin() {
   stopPolling();
@@ -233,16 +293,37 @@ function showLogin() {
   showView('login');
 }
 
+// Adds a machine after checking that it answers and the token is right; updates it if already known.
+async function addDevice({ name, url, token }) {
+  const target = normalizeDeviceUrl(url);
+  const dev = { id: randomId().slice(0, 8), name: '', url: target.url, token: String(token || target.token || '').trim() };
+  if (!dev.token) throw new Error('アクセストークンを入力してください（`remota token` で表示されます）');
+  const info = await request(dev, 'info', { timeout: 8000 });
+  const existing = devices.list.find((d) => d.url === dev.url);
+  if (existing) {
+    existing.token = dev.token;
+    if (name) existing.name = String(name).trim().slice(0, 40);
+    devices.save();
+    return existing;
+  }
+  dev.name = String(name || '').trim().slice(0, 40) || info.hostname || new URL(dev.url).hostname;
+  devices.list.push(dev);
+  devices.save();
+  state.live.set(dev.id, { online: true, info, infoAt: Date.now() });
+  registerPush([dev]).catch(() => {});
+  return dev;
+}
+
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const err = $('#login-error');
   err.hidden = true;
   try {
-    await api('/api/login', { method: 'POST', body: JSON.stringify({ token: $('#login-token').value.trim() }) });
+    await addDevice({ url: location.origin, token: $('#login-token').value });
     $('#login-token').value = '';
     await boot();
   } catch (ex) {
-    err.textContent = ex.message === 'too many attempts' ? '試行回数が多すぎます。しばらく待ってください。' : 'トークンが違います';
+    err.textContent = ex.message;
     err.hidden = false;
   }
 });
@@ -250,11 +331,6 @@ $('#login-form').addEventListener('submit', async (e) => {
 // ---------- home: devices and their sessions ----------
 
 const keyOf = (node, id) => `${node}:${id}`;
-
-// API path for a device: the hub's own sessions are local, others are relayed through /api/n/<device>/.
-function nodeApi(node, path) {
-  return node && node !== 'local' ? `/api/n/${node}/${path}` : `/api/${path}`;
-}
 
 function nodeById(id) {
   return state.nodes.find((n) => n.id === id);
@@ -285,18 +361,22 @@ function renderSessions() {
   list.replaceChildren();
   const multi = state.nodes.length > 1;
   $('#empty-state').hidden = state.sessions.length > 0 || multi;
-  $('#host-label').textContent = multi ? `${state.nodes.length}台の機器` : state.info ? `${state.info.user}@${state.info.hostname}` : '';
+  const only = state.nodes[0];
+  const info = only && (state.live.get(only.id) || {}).info;
+  $('#host-label').textContent = multi ? `${state.nodes.length}台の機器` : info ? `${info.user}@${info.hostname}` : '';
+  $('#home-offline').hidden = multi || !only || only.online !== false;
+  if (!multi && only && only.online === false) $('#home-offline').textContent = `${only.name} に接続できません（${only.error || '不明なエラー'}）— 再試行中…`;
 
   // One section per device, devices needing attention first.
   const rank = (n) => {
     const own = state.sessions.filter((s) => s.node === n.id);
-    return own.some((s) => s.status === 'waiting') ? 0 : !n.online ? 2 : own.length ? 1 : 3;
+    return own.some((s) => s.status === 'waiting') ? 0 : n.online === false ? 2 : own.length ? 1 : 3;
   };
-  const nodes = [...state.nodes].sort((a, b) => rank(a) - rank(b) || (a.local ? -1 : b.local ? 1 : 0) || a.name.localeCompare(b.name));
+  const nodes = [...state.nodes].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   for (const n of multi ? nodes : []) {
     const own = sortedSessions(state.sessions.filter((s) => s.node === n.id));
     const head = document.createElement('li');
-    head.className = `device-head${n.online ? '' : ' offline'}`;
+    head.className = `device-head${n.online === false ? ' offline' : ''}`;
     const waiting = own.filter((s) => s.status === 'waiting').length;
     head.innerHTML = `
       <span class="device-dot"></span>
@@ -304,11 +384,13 @@ function renderSessions() {
       <span class="device-meta"></span>
       <button class="icon-btn device-add" aria-label="この機器で新規セッション"><svg class="ico"><use href="#i-plus"/></svg></button>`;
     head.querySelector('.device-name').textContent = n.name;
-    head.querySelector('.device-meta').textContent = !n.online
+    head.querySelector('.device-meta').textContent = n.online === false
       ? `オフライン${n.error ? `（${n.error}）` : ''}`
-      : `${own.length}セッション${waiting ? ` · 承認待ち${waiting}` : ''}${n.local ? ' · このサーバー' : ` · ${n.latency ?? '–'}ms`}`;
+      : n.online === undefined
+        ? '接続中…'
+        : `${own.length}セッション${waiting ? ` · 承認待ち${waiting}` : ''} · ${n.latency ?? '–'}ms`;
     head.querySelector('.device-add').addEventListener('click', () => openNewDialog(n.id));
-    head.querySelector('.device-add').disabled = !n.online;
+    head.querySelector('.device-add').disabled = n.online === false;
     list.append(head);
     for (const s of own) list.append(sessionCard(s));
     if (!own.length && n.online) {
@@ -323,20 +405,41 @@ function renderSessions() {
 
 function openSession(node, id) {
   haptic();
-  location.hash = `#/s/${node || 'local'}/${id}`;
+  location.hash = `#/s/${node}/${id}`;
+}
+
+// Asks every machine for its sessions in parallel; one slow or dead machine never holds up the rest.
+async function pollDevice(dev) {
+  const live = state.live.get(dev.id) || {};
+  state.live.set(dev.id, live);
+  const started = performance.now();
+  try {
+    const sessions = await request(dev, 'sessions', { timeout: 6000 });
+    live.latency = Math.round(performance.now() - started);
+    live.online = true;
+    live.error = null;
+    live.sessions = sessions;
+    if (!live.info || Date.now() - (live.infoAt || 0) > 60000) {
+      live.info = await request(dev, 'info', { timeout: 6000 }).catch(() => live.info);
+      live.infoAt = Date.now();
+    }
+  } catch (ex) {
+    live.online = false;
+    live.error = ex.message;
+  }
 }
 
 async function refreshSessions() {
-  try {
-    const data = await api('/api/overview');
-    state.nodes = data.nodes;
-    state.sessions = data.sessions;
-    $('#home-offline').hidden = true;
-    if (term.sessionId) updateDeviceLabel();
-  } catch (ex) {
-    if (ex.message !== 'unauthorized') $('#home-offline').hidden = false;
-    return;
-  }
+  await Promise.all(devices.list.map(pollDevice));
+  state.nodes = devices.list.map((d) => {
+    const live = state.live.get(d.id) || {};
+    return { id: d.id, name: d.name, url: d.url, online: live.online, latency: live.latency, error: live.error, info: live.info };
+  });
+  state.sessions = devices.list.flatMap((d) => {
+    const live = state.live.get(d.id) || {};
+    return (live.sessions || []).map((s) => ({ ...s, node: d.id, stale: live.online === false }));
+  });
+  if (term.sessionId) updateDeviceLabel();
   notifyTransitions();
   if (!$('#view-home').hidden) renderSessions();
   if ($('#dlg-devices').open) renderDevices();
@@ -383,7 +486,7 @@ $('#btn-devices').addEventListener('click', openDevices);
 // ----- new session -----
 
 async function openNewDialog(nodeId) {
-  const online = state.nodes.filter((n) => n.online);
+  const online = state.nodes.filter((n) => n.online !== false);
   const nodeChips = $('#node-list');
   nodeChips.replaceChildren();
   $('#node-field').hidden = state.nodes.length < 2;
@@ -405,14 +508,14 @@ async function openNewDialog(nodeId) {
   $('#new-name').value = '';
   $('#new-error').hidden = true;
   $('#dlg-new').showModal();
-  const preferred = [nodeId, prefs.get('lastNode', 'local'), 'local'].find((id) => online.some((n) => n.id === id)) || (online[0] && online[0].id) || 'local';
-  await pickNode(preferred);
+  const preferred = [nodeId, prefs.get('lastNode')].find((id) => online.some((n) => n.id === id)) || (online[0] && online[0].id);
+  if (preferred) await pickNode(preferred);
 }
 
-// Presets and the default directory come from the chosen device itself.
+// Presets and the default directory come from the chosen machine itself.
 async function loadNodeDefaults(id) {
-  let info = id === 'local' ? state.info : null;
-  if (!info) info = await api(nodeApi(id, 'info')).catch(() => null);
+  const live = state.live.get(id) || {};
+  const info = live.info || (await devApi(id, 'info').catch(() => null));
   const presets = (info && info.presets) || [{ name: 'Shell', command: '' }];
   const chips = $('#preset-list');
   chips.replaceChildren();
@@ -431,7 +534,7 @@ async function loadNodeDefaults(id) {
   });
   pick(Math.min(prefs.get('lastPreset', 1), presets.length - 1));
 
-  const history = prefs.get(`cwdHistory.${id}`, id === 'local' ? prefs.get('cwdHistory', []) : []);
+  const history = prefs.get(`cwdHistory.${id}`, []);
   $('#new-cwd').value = history[0] || (info && info.defaultCwd) || '';
   const cwdChips = $('#cwd-chips');
   cwdChips.replaceChildren();
@@ -449,9 +552,9 @@ $('#new-form').addEventListener('submit', async (e) => {
   if (e.submitter && e.submitter.value === 'cancel') return;
   e.preventDefault();
   const cwd = $('#new-cwd').value.trim();
-  const node = state.newNode || 'local';
+  const node = state.newNode;
   try {
-    const s = await api(nodeApi(node, 'sessions'), {
+    const s = await devApi(node, 'sessions', {
       method: 'POST',
       body: JSON.stringify({ name: $('#new-name').value, cwd, command: $('#new-command').value.trim() }),
     });
@@ -481,28 +584,34 @@ function renderDevices() {
     const li = document.createElement('li');
     li.className = 'device-row';
     li.innerHTML = `
-      <span class="device-dot ${n.online ? 'on' : 'off'}"></span>
+      <span class="device-dot ${n.online === false ? 'off' : 'on'}"></span>
       <div class="device-info"><strong></strong><span class="muted small"></span></div>
       <button type="button" class="btn small-btn" data-act="rename">名前</button>
-      ${n.local ? '' : '<button type="button" class="btn small-btn danger" data-act="remove">削除</button>'}`;
+      <button type="button" class="btn small-btn danger" data-act="remove">削除</button>`;
     li.querySelector('strong').textContent = n.name;
-    li.querySelector('.muted').textContent = n.local
-      ? `このサーバー · ${n.user}@${n.hostname}`
-      : `${n.url} · ${n.online ? `${n.latency}ms` : `オフライン${n.error ? `: ${n.error}` : ''}`}`;
-    li.querySelector('[data-act="rename"]').addEventListener('click', async () => {
+    const who = n.info ? `${n.info.user}@${n.info.hostname} · ` : '';
+    li.querySelector('.muted').textContent = `${who}${n.url} · ${n.online === false ? `オフライン${n.error ? `: ${n.error}` : ''}` : `${n.latency ?? '–'}ms`}`;
+    li.querySelector('[data-act="rename"]').addEventListener('click', () => {
       const name = prompt('機器の名前', n.name);
-      if (!name) return;
-      await api(`/api/nodes/${n.id}`, { method: 'PATCH', body: JSON.stringify({ name }) }).catch((ex) => toast(ex.message));
+      const dev = devices.get(n.id);
+      if (!name || !dev) return;
+      dev.name = name.trim().slice(0, 40);
+      devices.save();
       refreshSessions();
     });
-    const rm = li.querySelector('[data-act="remove"]');
-    if (rm) {
-      rm.addEventListener('click', async () => {
-        if (!confirm(`「${n.name}」を登録から外しますか？（その機器のセッションは止まりません）`)) return;
-        await api(`/api/nodes/${n.id}`, { method: 'DELETE' }).catch((ex) => toast(ex.message));
-        refreshSessions();
-      });
-    }
+    li.querySelector('[data-act="remove"]').addEventListener('click', async () => {
+      if (!confirm(`「${n.name}」をこのアプリから外しますか？（その機器のセッションは止まりません）`)) return;
+      await unregisterPush([devices.get(n.id)]).catch(() => {});
+      devices.list = devices.list.filter((d) => d.id !== n.id);
+      devices.save();
+      state.live.delete(n.id);
+      if (!devices.list.length) {
+        $('#dlg-devices').close();
+        showLogin();
+        return;
+      }
+      refreshSessions();
+    });
     list.append(li);
   }
 }
@@ -515,14 +624,11 @@ $('#dev-form').addEventListener('submit', async (e) => {
   btn.disabled = true;
   btn.textContent = '接続を確認中…';
   try {
-    const n = await api('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ name: $('#dev-name').value, url: $('#dev-url').value, token: $('#dev-token').value }),
-    });
+    const dev = await addDevice({ name: $('#dev-name').value, url: $('#dev-url').value, token: $('#dev-token').value });
     $('#dev-name').value = '';
     $('#dev-url').value = '';
     $('#dev-token').value = '';
-    toast(`「${n.name}」を追加しました`);
+    toast(`「${dev.name}」を追加しました`);
     await refreshSessions();
   } catch (ex) {
     err.textContent = ex.message;
@@ -531,6 +637,41 @@ $('#dev-form').addEventListener('submit', async (e) => {
     btn.disabled = false;
     btn.textContent = '追加';
   }
+});
+
+// The machine list lives on this phone; export/import moves it to another phone or browser.
+$('#btn-dev-export').addEventListener('click', async () => {
+  const text = JSON.stringify(devices.list.map(({ name, url, token }) => ({ name, url, token })));
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('機器リストをコピーしました（トークンを含むので取り扱いに注意）', { ms: 3500 });
+  } catch {
+    prompt('この内容をコピーしてください（トークンを含みます）', text);
+  }
+});
+
+$('#btn-dev-import').addEventListener('click', async () => {
+  const text = prompt('エクスポートした機器リストを貼り付けてください');
+  if (!text) return;
+  let items;
+  try {
+    items = JSON.parse(text);
+    if (!Array.isArray(items)) throw new Error();
+  } catch {
+    toast('形式が正しくありません');
+    return;
+  }
+  let added = 0;
+  for (const item of items) {
+    try {
+      await addDevice(item);
+      added++;
+    } catch (ex) {
+      toast(`${item.name || item.url}: ${ex.message}`, { ms: 3000 });
+    }
+  }
+  toast(`${added}台の機器を取り込みました`);
+  refreshSessions();
 });
 
 // ---------- terminal & connection ----------
@@ -544,7 +685,7 @@ const term = {
   fit: null,
   ws: null,
   sessionId: null,
-  node: 'local',
+  node: null,
   retry: 0,
   retryTimer: null,
   pingTimer: null,
@@ -637,13 +778,15 @@ const term = {
     if (!this.sessionId) return;
     this.fitSoon();
     const { cols, rows } = this.instance;
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const params = new URLSearchParams({ session: this.sessionId, node: this.node, cols, rows, client: CLIENT_ID });
+    const dev = devices.get(this.node);
+    if (!dev) return;
+    const params = new URLSearchParams({ session: this.sessionId, cols, rows, client: CLIENT_ID });
     if (this.epoch && this.seq !== null) {
       params.set('epoch', this.epoch);
       params.set('since', this.seq);
     }
-    const ws = new WebSocket(`${proto}://${location.host}/ws?${params}`);
+    // Browsers can't set headers on a WebSocket, so the token rides in the subprotocol list.
+    const ws = new WebSocket(`${dev.url.replace(/^http/, 'ws')}/ws?${params}`, ['remota', `auth.${dev.token}`]);
     this.ws = ws;
     ws.onopen = () => {
       this.retry = 0;
@@ -1082,7 +1225,7 @@ function queueScroll(lines) {
     if (!n) return;
     term.scrolledBack = true;
     updateJumpButton();
-    await api(nodeApi(term.node, `sessions/${term.sessionId}/scroll`), {
+    await devApi(term.node, `sessions/${term.sessionId}/scroll`, {
       method: 'POST',
       body: JSON.stringify({ direction: n < 0 ? 'up' : 'down', lines: Math.abs(n) }),
     }).catch(() => {});
@@ -1098,7 +1241,7 @@ function pageScroll(direction) {
 function exitScrollback() {
   term.scrolledBack = false;
   updateJumpButton();
-  api(nodeApi(term.node, `sessions/${term.sessionId}/scroll`), { method: 'POST', body: JSON.stringify({ direction: 'exit' }) }).catch(() => {});
+  devApi(term.node, `sessions/${term.sessionId}/scroll`, { method: 'POST', body: JSON.stringify({ direction: 'exit' }) }).catch(() => {});
 }
 
 function updateJumpButton() {
@@ -1352,7 +1495,7 @@ async function uploadFile(file) {
   if (!term.sessionId) return;
   toast(`アップロード中: ${file.name}`, { ms: 10000 });
   try {
-    const res = await api(nodeApi(term.node, `upload?session=${term.sessionId}`), {
+    const res = await devApi(term.node, `upload?session=${term.sessionId}`, {
       method: 'POST',
       body: file,
       headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name || 'image.png') },
@@ -1426,12 +1569,12 @@ $('#dlg-menu').addEventListener('close', async () => {
   } else if (action === 'rename') {
     const name = prompt('新しい名前', $('#term-name').textContent);
     if (name) {
-      await api(nodeApi(node, `sessions/${id}`), { method: 'PATCH', body: JSON.stringify({ name }) });
+      await devApi(node, `sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
       $('#term-name').textContent = name;
     }
   } else if (action === 'kill') {
     if (confirm('このセッションを終了しますか？実行中のプロセスも終了します。')) {
-      await api(nodeApi(node, `sessions/${id}`), { method: 'DELETE' });
+      await devApi(node, `sessions/${id}`, { method: 'DELETE' });
       prefs.remove(`draft.${keyOf(node, id)}`);
       location.hash = '#/';
     }
@@ -1442,7 +1585,7 @@ $('#dlg-menu').addEventListener('close', async () => {
 async function openTextView() {
   let text = null;
   try {
-    ({ text } = await api(nodeApi(term.node, `sessions/${term.sessionId}/text?lines=3000`)));
+    ({ text } = await devApi(term.node, `sessions/${term.sessionId}/text?lines=3000`));
   } catch {
     // use the local buffer
   }
@@ -1562,7 +1705,11 @@ $('#set-auto-enter').addEventListener('change', (e) => prefs.set('autoEnter', e.
 $('#set-choices').addEventListener('change', (e) => prefs.set('choices', e.target.checked));
 $('#set-haptics').addEventListener('change', (e) => prefs.set('haptics', e.target.checked));
 $('#btn-logout').addEventListener('click', async () => {
-  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  if (!confirm('このアプリに登録したすべての機器とトークンを削除しますか？（機器側のセッションは止まりません）')) return;
+  await unregisterPush(devices.list).catch(() => {});
+  devices.list = [];
+  devices.save();
+  state.live.clear();
   $('#dlg-settings').close();
   showLogin();
 });
@@ -1586,7 +1733,11 @@ async function updatePushState() {
   }
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.getSubscription();
-  el.textContent = sub ? '有効：完了・承認待ちを通知します' : Notification.permission === 'denied' ? 'ブラウザ設定で通知が拒否されています' : '無効';
+  el.textContent = sub
+    ? `有効：登録済みの${devices.list.length}台すべての完了・承認待ちを通知します`
+    : Notification.permission === 'denied'
+      ? 'ブラウザ設定で通知が拒否されています'
+      : '無効';
   btn.disabled = false;
   btn.textContent = sub ? '無効化' : '有効化';
 }
@@ -1596,18 +1747,62 @@ function b64ToBytes(b64) {
   return Uint8Array.from(s, (c) => c.charCodeAt(0));
 }
 
+function bytesToB64(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// The phone's own VAPID key pair. Push services accept messages only from the key a subscription
+// was made with, so every machine signs with this same pair, handed to it when it is registered.
+async function ensureVapid() {
+  const saved = prefs.get('vapid', null);
+  if (saved) return saved;
+  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const vapid = {
+    publicKey: bytesToB64(await crypto.subtle.exportKey('raw', pair.publicKey)),
+    privateKey: (await crypto.subtle.exportKey('jwk', pair.privateKey)).d,
+  };
+  prefs.set('vapid', vapid);
+  return vapid;
+}
+
+async function currentSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+// Tells each machine where and how to push; safe to repeat (machines replace by endpoint).
+async function registerPush(list) {
+  const sub = await currentSubscription();
+  const vapid = prefs.get('vapid', null);
+  if (!sub || !vapid) return;
+  await Promise.all(list.map((dev) =>
+    request(dev, 'push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON(), vapid, device: dev.id }) }).catch(() => {})
+  ));
+}
+
+async function unregisterPush(list) {
+  const sub = await currentSubscription();
+  if (!sub) return;
+  await Promise.all(list.map((dev) =>
+    request(dev, 'push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }), timeout: 5000 }).catch(() => {})
+  ));
+}
+
 $('#btn-push').addEventListener('click', async () => {
   try {
     const reg = await navigator.serviceWorker.ready;
     const existing = await reg.pushManager.getSubscription();
     if (existing) {
-      await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: existing.endpoint }) });
+      await unregisterPush(devices.list);
       await existing.unsubscribe();
+      toast('通知を無効にしました');
     } else {
       if ((await Notification.requestPermission()) !== 'granted') throw new Error('通知が許可されませんでした');
-      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(state.info.vapidPublicKey) });
-      await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()) });
-      toast('通知を有効にしました');
+      const vapid = await ensureVapid();
+      await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(vapid.publicKey) });
+      await registerPush(devices.list);
+      toast(`通知を有効にしました（${devices.list.length}台）`);
     }
   } catch (ex) {
     toast(ex.message);
@@ -1616,23 +1811,19 @@ $('#btn-push').addEventListener('click', async () => {
 });
 
 $('#btn-push-test').addEventListener('click', async () => {
-  try {
-    const r = await api('/api/push/test', { method: 'POST' });
-    toast(r.subscribers ? '送信しました' : '通知先が未登録です（Webhookのみ送信）');
-  } catch (ex) {
-    toast(ex.message);
-  }
+  const results = await Promise.all(devices.list.map((dev) => request(dev, 'push/test', { method: 'POST' }).then(() => true, () => false)));
+  const ok = results.filter(Boolean).length;
+  toast(`${ok}/${devices.list.length}台からテスト通知を送信しました`);
 });
 
 // ---------- routing & boot ----------
 
 function route() {
   for (const dlg of document.querySelectorAll('dialog[open]')) dlg.close();
-  // #/s/<device>/<session>; the older #/s/<session> form means this server.
-  const m = location.hash.match(/^#\/s\/(?:([0-9a-z]+)\/)?([0-9a-f]+)$/);
-  if (m) {
+  const m = location.hash.match(/^#\/s\/([0-9a-z]+)\/([0-9a-f]+)$/);
+  if (m && devices.get(m[1])) {
     showView('term');
-    term.open(m[1] || 'local', m[2]);
+    term.open(m[1], m[2]);
     term.fitSoon();
     // Slower poll in the terminal: only for the back-button badge and heads-up toasts.
     startPolling(5000);
@@ -1645,18 +1836,25 @@ function route() {
 }
 
 async function boot() {
-  try {
-    state.info = await api('/api/info');
-  } catch (ex) {
-    if (ex.message !== 'unauthorized') {
-      // Server unreachable: keep trying rather than showing a dead screen.
-      showView('home');
-      $('#home-offline').hidden = false;
-      setTimeout(boot, 3000);
+  // A login link (`remota url` / QR code) carries the token in the fragment: register this machine.
+  const hash = new URLSearchParams(location.hash.slice(1));
+  if (hash.get('token')) {
+    const token = hash.get('token');
+    history.replaceState(null, '', location.pathname);
+    try {
+      await addDevice({ url: location.origin, token });
+    } catch (ex) {
+      showLogin();
+      $('#login-error').textContent = ex.message;
+      $('#login-error').hidden = false;
+      return;
     }
-    return;
   }
+  if (!devices.list.length) return showLogin();
+  publishDeviceNames();
   route();
+  // Machines may have been reinstalled or restarted with fresh state; re-register quietly.
+  registerPush(devices.list).catch(() => {});
 }
 
 window.addEventListener('hashchange', route);
@@ -1668,13 +1866,13 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   term.reconnectNow();
-  if (state.info) refreshSessions();
+  if (devices.list.length) refreshSessions();
 });
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data && e.data.type === 'open' && e.data.sessionId) openSession(e.data.node, e.data.sessionId);
+    if (e.data && e.data.type === 'open' && e.data.sessionId && e.data.device) openSession(e.data.device, e.data.sessionId);
   });
 }
 

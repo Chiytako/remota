@@ -17,10 +17,21 @@ class Notifier {
     return this.config.vapid.publicKey;
   }
 
-  subscribe(sub) {
+  // The phone owns its VAPID key pair and hands it to every machine it uses, so all of them can
+  // push to its single subscription without a central server. `device` is the phone's own id for
+  // this machine, echoed back in payloads so a tap opens the right session.
+  subscribe(sub, { vapid, device } = {}) {
     if (!sub || typeof sub.endpoint !== 'string' || !sub.keys) throw new Error('invalid subscription');
+    const entry = { endpoint: sub.endpoint, keys: sub.keys };
+    if (vapid) {
+      if (typeof vapid.publicKey !== 'string' || typeof vapid.privateKey !== 'string') throw new Error('invalid VAPID keys');
+      // Throws on malformed keys, before anything is stored.
+      webpush.getVapidHeaders('https://push.example', 'mailto:remota@localhost', vapid.publicKey, vapid.privateKey, 'aes128gcm');
+      entry.vapid = { publicKey: vapid.publicKey, privateKey: vapid.privateKey };
+    }
+    if (device) entry.device = String(device).slice(0, 64);
     this.subscriptions = this.subscriptions.filter((s) => s.endpoint !== sub.endpoint);
-    this.subscriptions.push({ endpoint: sub.endpoint, keys: sub.keys });
+    this.subscriptions.push(entry);
     writeJson(SUBS_FILE, this.subscriptions);
   }
 
@@ -29,16 +40,18 @@ class Notifier {
     writeJson(SUBS_FILE, this.subscriptions);
   }
 
-  async send({ title, body, sessionId, node, tag }) {
-    const payload = JSON.stringify({ title, body, sessionId, node: node || 'local', tag: tag || (sessionId ? `${node || 'local'}:${sessionId}` : 'remota') });
+  async send({ title, body, sessionId, tag }) {
     const gone = [];
     await Promise.all(
-      this.subscriptions.map((sub) =>
-        webpush.sendNotification(sub, payload, { TTL: 3600, urgency: 'high' }).catch((err) => {
+      this.subscriptions.map((sub) => {
+        const payload = JSON.stringify({ title, body, sessionId, device: sub.device || null, tag: tag || (sessionId ? `${sub.device || ''}:${sessionId}` : 'remota') });
+        const options = { TTL: 3600, urgency: 'high' };
+        if (sub.vapid) options.vapidDetails = { subject: 'mailto:remota@localhost', ...sub.vapid };
+        return webpush.sendNotification(sub, payload, options).catch((err) => {
           if (err.statusCode === 404 || err.statusCode === 410) gone.push(sub.endpoint);
           else console.warn(`[remota] push failed: ${err.statusCode || ''} ${err.message}`);
-        })
-      )
+        });
+      })
     );
     if (gone.length) {
       this.subscriptions = this.subscriptions.filter((s) => !gone.includes(s.endpoint));

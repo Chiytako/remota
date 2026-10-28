@@ -10,7 +10,6 @@ const { WebSocketServer } = require('ws');
 const { CONFIG_DIR } = require('./config');
 const { Notifier } = require('./notify');
 const { SessionManager } = require('./sessions');
-const { NodeRegistry } = require('./nodes');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MODULES_DIR = path.join(__dirname, '..', 'node_modules');
@@ -60,16 +59,39 @@ function createServer(config) {
   const notifier = new Notifier(config);
   const sessions = new SessionManager(config, notifier);
   sessions.restore();
-  const nodes = new NodeRegistry(config, notifier, sessions);
-  nodes.start();
-  const localInfo = () => ({ hostname: os.hostname(), user: os.userInfo().username });
   const failures = new Map();
 
-  function isAuthed(req) {
+  // How a request proved itself: a token (header, or WebSocket subprotocol since browsers can't set
+  // headers there) works from any origin, so the app opened from one machine can drive the others.
+  // The cookie is same-origin only.
+  function authKind(req) {
     const auth = req.headers.authorization || '';
-    if (auth.startsWith('Bearer ') && safeEqual(auth.slice(7), config.token)) return true;
+    if (auth.startsWith('Bearer ') && safeEqual(auth.slice(7), config.token)) return 'token';
+    const proto = String(req.headers['sec-websocket-protocol'] || '')
+      .split(',')
+      .map((p) => p.trim())
+      .find((p) => p.startsWith('auth.'));
+    if (proto && safeEqual(proto.slice(5), config.token)) return 'token';
     const cookie = parseCookies(req.headers.cookie)[COOKIE];
-    return Boolean(cookie) && safeEqual(cookie, cookieValue(config.token));
+    if (cookie && safeEqual(cookie, cookieValue(config.token))) return 'cookie';
+    return null;
+  }
+
+  function isAuthed(req) {
+    return authKind(req) !== null;
+  }
+
+  // Requests from other origins carry the token themselves (no cookies), so any origin may ask.
+  function setCors(req, res) {
+    const origin = req.headers.origin;
+    if (!origin) return;
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Filename');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '600');
+    // Chrome's Private Network Access: allow a page on one LAN machine to call another.
+    if (req.headers['access-control-request-private-network']) res.setHeader('Access-Control-Allow-Private-Network', 'true');
   }
 
   function rateLimited(req) {
@@ -150,7 +172,11 @@ function createServer(config) {
       return send(res, 200, { ok: true });
     }
 
-    if (!isAuthed(req)) return send(res, 401, { error: 'unauthorized' });
+    if (rateLimited(req)) return send(res, 429, { error: 'too many attempts' });
+    if (!isAuthed(req)) {
+      if (req.headers.authorization) recordFailure(req);
+      return send(res, 401, { error: 'unauthorized' });
+    }
 
     if (route === 'POST /api/logout') {
       res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; Max-Age=0`);
@@ -168,42 +194,6 @@ function createServer(config) {
     }
     if (route === 'GET /api/sessions') return send(res, 200, sessions.list());
 
-    // ----- multiple devices (this server acting as the hub) -----
-    if (route === 'GET /api/overview') return send(res, 200, nodes.overview(localInfo()));
-    if (route === 'GET /api/nodes') return send(res, 200, nodes.overview(localInfo()).nodes);
-    if (route === 'POST /api/nodes') {
-      try {
-        return send(res, 201, await nodes.add(await readJsonBody(req)));
-      } catch (err) {
-        return send(res, 400, { error: err.message });
-      }
-    }
-    const nm = url.pathname.match(/^\/api\/nodes\/([0-9a-z]+)$/);
-    if (nm) {
-      if (nm[1] === 'local') {
-        if (req.method !== 'PATCH') return send(res, 400, { error: 'この機器は削除できません' });
-        const { name } = await readJsonBody(req);
-        config.localName = String(name || '').trim().slice(0, 40);
-        require('./config').save(config);
-        return send(res, 200, { ok: true });
-      }
-      if (req.method === 'PATCH') {
-        try {
-          const updated = nodes.update(nm[1], await readJsonBody(req));
-          return updated ? send(res, 200, updated) : send(res, 404, { error: 'no such device' });
-        } catch (err) {
-          return send(res, 400, { error: err.message });
-        }
-      }
-      if (req.method === 'DELETE') return send(res, nodes.remove(nm[1]) ? 200 : 404, { ok: true });
-    }
-    // /api/n/<device>/<path> is relayed to that device's /api/<path>.
-    const pm = url.pathname.match(/^\/api\/n\/([0-9a-z]+)\/(.+)$/);
-    if (pm) {
-      const node = nodes.get(pm[1]);
-      if (!node) return send(res, 404, { error: 'no such device' });
-      return nodes.proxyHttp(node, req, res, `/api/${pm[2]}${url.search}`);
-    }
     if (route === 'POST /api/sessions') {
       const body = await readJsonBody(req);
       try {
@@ -264,7 +254,14 @@ function createServer(config) {
     }
 
     if (route === 'POST /api/push/subscribe') {
-      notifier.subscribe(await readJsonBody(req));
+      const body = await readJsonBody(req);
+      try {
+        // New form: { subscription, vapid, device }; the bare subscription is still accepted.
+        if (body.subscription) notifier.subscribe(body.subscription, { vapid: body.vapid, device: body.device });
+        else notifier.subscribe(body);
+      } catch (err) {
+        return send(res, 400, { error: err.message });
+      }
       return send(res, 201, { ok: true });
     }
     if (route === 'POST /api/push/unsubscribe') {
@@ -284,7 +281,6 @@ function createServer(config) {
       const title = String(body.title || (session ? session.name : 'Remota')).slice(0, 120);
       const message = String(body.message || body.body || '完了しました').slice(0, 500);
       if (session && body.status) session.setStatus(body.status === 'waiting' ? 'waiting' : 'idle');
-      if (session) session.recordAlert(title, message);
       await notifier.send({ title, body: message, sessionId: session ? session.id : undefined });
       return send(res, 200, { ok: true });
     }
@@ -298,16 +294,20 @@ function createServer(config) {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     try {
-      if (url.pathname.startsWith('/api/')) return await api(req, res, url);
-
-      // A login link from the QR code: set the cookie, then drop the token from the address bar.
-      if (url.pathname === '/' && url.searchParams.has('token')) {
-        if (!rateLimited(req) && safeEqual(url.searchParams.get('token'), config.token)) {
-          setAuthCookie(req, res);
-          res.writeHead(302, { Location: '/' });
+      if (url.pathname.startsWith('/api/')) {
+        setCors(req, res);
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204);
           return res.end();
         }
-        recordFailure(req);
+        return await api(req, res, url);
+      }
+
+      // Older login links put the token in the query; move it to the fragment, which the app
+      // reads and which never reaches server logs.
+      if (url.pathname === '/' && url.searchParams.has('token')) {
+        res.writeHead(302, { Location: `/#token=${encodeURIComponent(url.searchParams.get('token'))}` });
+        return res.end();
       }
 
       if (url.pathname.startsWith('/vendor/')) {
@@ -335,6 +335,8 @@ function createServer(config) {
     noServer: true,
     maxPayload: 4 * 1024 * 1024,
     perMessageDeflate: { threshold: 512, zlibDeflateOptions: { level: 6 } },
+    // Echo the plain protocol name; the auth.<token> entry is never sent back.
+    handleProtocols: (protocols) => (protocols.has('remota') ? 'remota' : false),
   });
 
   server.on('upgrade', (req, socket, head) => {
@@ -347,7 +349,10 @@ function createServer(config) {
     } catch {
       sameOrigin = false;
     }
-    if (url.pathname !== '/ws' || !sameOrigin || !isAuthed(req)) {
+    // Cross-site WebSocket hijacking only works with ambient cookies; a token-authenticated
+    // socket may come from the app opened on another machine.
+    const kind = authKind(req);
+    if (url.pathname !== '/ws' || !kind || (kind === 'cookie' && !sameOrigin)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return socket.destroy();
     }
@@ -357,12 +362,6 @@ function createServer(config) {
   wss.on('connection', (ws, url) => {
     ws.isAlive = true;
     ws.on('pong', () => (ws.isAlive = true));
-    const nodeId = url.searchParams.get('node');
-    if (nodeId && nodeId !== 'local') {
-      const node = nodes.get(nodeId);
-      if (!node) return ws.close(4404, 'no such device');
-      return nodes.proxyWs(node, ws, url.searchParams);
-    }
     const session = sessions.get(url.searchParams.get('session'));
     if (!session) {
       ws.send(JSON.stringify({ type: 'error', error: 'no such session' }));
@@ -413,10 +412,7 @@ function createServer(config) {
       ws.ping();
     }
   }, 20000);
-  server.on('close', () => {
-    clearInterval(heartbeat);
-    nodes.stop();
-  });
+  server.on('close', () => clearInterval(heartbeat));
 
   return { server, sessions, notifier, useTls };
 }

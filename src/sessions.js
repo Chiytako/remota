@@ -67,9 +67,6 @@ class Session extends EventEmitter {
     this.lastInputAt = 0;
     this.outputSinceInput = 0;
     this.notifiedCycle = false;
-    // Counts alerts raised for this session; a hub watching this device relays new ones as pushes.
-    this.alertSeq = 0;
-    this.lastAlert = null;
     this.cols = 100;
     this.rows = 30;
     this.exited = false;
@@ -190,11 +187,6 @@ class Session extends EventEmitter {
     }
   }
 
-  recordAlert(title, body) {
-    this.alertSeq += 1;
-    this.lastAlert = { title, body, at: Date.now() };
-  }
-
   setStatus(status) {
     if (this.status === status) return;
     this.status = status;
@@ -265,8 +257,6 @@ class Session extends EventEmitter {
       clients: this.clients.size,
       tmux: this.useTmux,
       preview: lastLines(this.buffer.slice(-4000), 2),
-      alertSeq: this.alertSeq,
-      lastAlert: this.lastAlert,
     };
   }
 
@@ -396,7 +386,6 @@ class SessionManager extends EventEmitter {
   alert(session, kind, body) {
     if (session.notifiedCycle && kind === '完了') return;
     session.notifiedCycle = true;
-    session.recordAlert(`${session.name}: ${kind}`, body || kind);
     this.notifier.send({ title: `${session.name}: ${kind}`, body: body || kind, sessionId: session.id }).catch(() => {});
   }
 }

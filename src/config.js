@@ -70,7 +70,7 @@ function loadConfig() {
   if (dirty || !fs.existsSync(CONFIG_FILE)) save(config);
 
   // Environment overrides apply to this run only; remember the file's values so saving
-  // (e.g. after adding a device) never writes them into the config file.
+  // never writes them into the config file.
   const fileValues = {};
   const override = (key, value) => {
     if (value === undefined || value === '') return;

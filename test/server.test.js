@@ -87,7 +87,7 @@ test('session lifecycle: create, stream output over WebSocket, type, delete', as
   assert.strictEqual(del.status, 200);
 });
 
-test('WebSocket without auth or from another origin is refused', async () => {
+test('WebSocket without auth, or with a cookie from another origin, is refused', async () => {
   const tryWs = (headers) =>
     new Promise((resolve) => {
       const ws = new WebSocket(`${base.replace('http', 'ws')}/ws?session=x`, { headers });
@@ -95,7 +95,11 @@ test('WebSocket without auth or from another origin is refused', async () => {
       ws.on('error', () => resolve('refused'));
     });
   assert.strictEqual(await tryWs({}), 'refused');
-  assert.strictEqual(await tryWs({ Authorization: `Bearer ${config.token}`, Origin: 'https://evil.example' }), 'refused');
+  // A cookie is sent by the browser automatically, so it only counts on the same origin
+  // (cross-site WebSocket hijacking). Tokens must be supplied explicitly and work from anywhere.
+  const login = await fetch(`${base}/api/login`, { method: 'POST', body: JSON.stringify({ token: config.token }) });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.strictEqual(await tryWs({ cookie, Origin: 'https://evil.example' }), 'refused');
 });
 
 test('upload stores the file inside the session directory', async () => {
@@ -161,4 +165,43 @@ test('reconnect resumes from the last offset and duplicate inputs run once', asy
   assert.strictEqual(c.hello.resume, false, 'a stale epoch gets a full replay');
   c.ws.close();
   await fetch(`${base}/api/sessions/${s.id}`, { method: 'DELETE', headers: auth() });
+});
+
+test('another origin can use the API and terminal with the token (no hub needed)', async () => {
+  const origin = 'http://192.168.1.50:7681';
+  const pre = await fetch(`${base}/api/sessions`, {
+    method: 'OPTIONS',
+    headers: { Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization,content-type' },
+  });
+  assert.strictEqual(pre.status, 204);
+  assert.strictEqual(pre.headers.get('access-control-allow-origin'), origin);
+  assert.match(pre.headers.get('access-control-allow-headers'), /Authorization/);
+
+  const s = await (await fetch(`${base}/api/sessions`, { method: 'POST', headers: { ...auth(), Origin: origin }, body: JSON.stringify({ cwd: home }) })).json();
+  // Browsers can't set headers on WebSockets, so the token comes as a subprotocol.
+  const ws = new WebSocket(`${base.replace('http', 'ws')}/ws?session=${s.id}`, ['remota', `auth.${config.token}`], { headers: { Origin: origin } });
+  await new Promise((resolve, reject) => {
+    ws.on('open', resolve);
+    ws.on('error', reject);
+  });
+  assert.strictEqual(ws.protocol, 'remota', 'the token must never be echoed back');
+  ws.close();
+
+  const bad = new WebSocket(`${base.replace('http', 'ws')}/ws?session=${s.id}`, ['remota', 'auth.wrong'], { headers: { Origin: origin } });
+  assert.strictEqual(await new Promise((r) => { bad.on('open', () => r('open')); bad.on('error', () => r('refused')); }), 'refused');
+  await fetch(`${base}/api/sessions/${s.id}`, { method: 'DELETE', headers: auth() });
+});
+
+test('push subscriptions carry the phone\'s own VAPID keys; bad keys are rejected', async () => {
+  const sub = { endpoint: 'https://push.example/abc', keys: { p256dh: 'x', auth: 'y' } };
+  const bad = await fetch(`${base}/api/push/subscribe`, { method: 'POST', headers: auth(), body: JSON.stringify({ subscription: sub, vapid: { publicKey: 'nope', privateKey: 'nope' } }) });
+  assert.strictEqual(bad.status, 400);
+  const webpush = require('web-push');
+  const vapid = webpush.generateVAPIDKeys();
+  const ok = await fetch(`${base}/api/push/subscribe`, { method: 'POST', headers: auth(), body: JSON.stringify({ subscription: sub, vapid, device: 'dev1' }) });
+  assert.strictEqual(ok.status, 201);
+  const stored = JSON.parse(fs.readFileSync(path.join(home, 'push-subscriptions.json'), 'utf8'));
+  assert.deepStrictEqual(stored[0].vapid, vapid);
+  assert.strictEqual(stored[0].device, 'dev1');
+  await fetch(`${base}/api/push/unsubscribe`, { method: 'POST', headers: auth(), body: JSON.stringify({ endpoint: sub.endpoint }) });
 });
