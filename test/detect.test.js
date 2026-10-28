@@ -42,3 +42,20 @@ test('answered prompt followed by more output is no longer waiting', () => {
 test('stripAnsi removes charset designations like ESC ( B', () => {
   assert.strictEqual(stripAnsi('\x1b(B\x1b[mroot@vm:~#'), 'root@vm:~#');
 });
+
+test('approval prompts from other agents are recognised', () => {
+  const prompts = [
+    'Allow command?\n› 1. Yes, proceed\n  2. No, and tell Codex what to do differently',
+    'Apply this change?\n● 1. Allow once\n  2. Allow always\n  3. Reject',
+    'Permission required: bash rm -rf build',
+    'Run shell command? (Y)es/(N)o [Yes]:',
+    'Waiting for permission to edit src/app.ts',
+  ];
+  for (const p of prompts) assert.strictEqual(classify(p), 'waiting', p);
+});
+
+test('busy indicators from other agents are recognised', () => {
+  for (const p of ['⠋ Thinking… (esc to cancel, 4s)', 'Working (12s • Esc to interrupt)', 'Generating… ctrl+c to stop']) {
+    assert.strictEqual(classify(p), 'working', p);
+  }
+});

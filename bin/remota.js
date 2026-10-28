@@ -1,21 +1,31 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const os = require('os');
 const { loadConfig, save, newToken, CONFIG_FILE } = require('../src/config');
 
 const HELP = `remota — スマホからAIコーディングエージェントを操作するセルフホスト型ターミナル
 
 使い方:
-  remota [start]              サーバーを起動（既定: 0.0.0.0:7681）
-  remota url                  ログイン用URLとQRコードを表示
-  remota token [--rotate]     アクセストークンを表示 / 再発行
-  remota notify [メッセージ]   スマホに通知を送る（エージェントのフック用）
-      --title <t>  --session <id>  --status <idle|waiting>
-  remota hooks                Claude Code 用のフック設定(JSON)を表示
-  remota help
+  remota [start]                 サーバーを起動（既定: HTTPS 0.0.0.0:7681、証明書の設定ページ :7680）
+  remota url                     スマホで開くURLとQRコードを表示
+  remota token [--rotate]        アクセストークンを表示 / 再発行
 
-環境変数: REMOTA_PORT, REMOTA_HOST, REMOTA_TOKEN, REMOTA_TMUX(auto|true|false), REMOTA_HOME
+  remota hooks                   コーディングエージェントの通知連携の状態を表示
+  remota hooks install [名前..]  通知連携を設定（省略時は見つかったエージェントすべて）
+  remota hooks uninstall [名前..] 通知連携を外す
+      対応: claude, codex, gemini, opencode, pi, copilot, cursor, droid, aider
+
+  remota notify [メッセージ]      スマホに通知（任意のエージェントやスクリプトから）
+      --status <idle|waiting>  --title <t>  --session <id>
+
+  remota ca                      HTTPS 用の証明書（認証局）の情報
+  remota ca export <file>        証明書を書き出す（他の機器で共通にするため）
+  remota ca import <file>        書き出した証明書を読み込む
+
+環境変数: REMOTA_PORT, REMOTA_HOST, REMOTA_TOKEN, REMOTA_HTTPS(true|false), REMOTA_HTTP_PORT,
+          REMOTA_TMUX(auto|true|false), REMOTA_HOME
 設定ファイル: ${CONFIG_FILE}
 `;
 
@@ -29,19 +39,35 @@ function lanAddresses() {
   return out;
 }
 
-function urls(config, useTls) {
-  const scheme = useTls ? 'https' : 'http';
-  const hosts = config.host === '0.0.0.0' ? lanAddresses() : [config.host];
-  if (!hosts.length) hosts.push('localhost');
-  return hosts.map((h) => `${scheme}://${h}:${config.port}/#token=${encodeURIComponent(config.token)}`);
+function builtinTls(config) {
+  return config.https !== false && !(config.tls && config.tls.cert);
 }
 
-function printUrls(config, useTls) {
-  const list = urls(config, useTls);
-  console.log('\nスマホでこのURLを開く（またはQRを読み取る）。2台目以降は、アプリの「機器を追加」にこのURLを貼り付け:');
+function hosts(config) {
+  const list = config.host === '0.0.0.0' ? lanAddresses() : [config.host];
+  return list.length ? list : ['localhost'];
+}
+
+// With built-in HTTPS the phone first needs the certificate, so the link goes to the plain-HTTP
+// setup page, which forwards to the HTTPS app once the certificate is trusted. The app reads the
+// same link when adding this machine from a QR code.
+function urls(config) {
+  const token = encodeURIComponent(config.token);
+  if (builtinTls(config) && config.httpPort !== false) {
+    const httpPort = config.httpPort || config.port - 1;
+    return hosts(config).map((h) => `http://${h}:${httpPort}/setup#token=${token}&https=${config.port}`);
+  }
+  const scheme = config.https === false && !(config.tls && config.tls.cert) ? 'http' : 'https';
+  return hosts(config).map((h) => `${scheme}://${h}:${config.port}/#token=${token}`);
+}
+
+function printUrls(config) {
+  const list = urls(config);
+  console.log('\nスマホでこのURLを開くか、QRコードを読み取ってください。');
+  console.log('2台目以降は、アプリの「機器」タブ →「QRで追加」で読み取れます。');
   for (const u of list) console.log(`  ${u}`);
   require('qrcode-terminal').generate(list[0], { small: true }, (qr) => console.log(qr));
-  console.log('ホーム画面に追加するとアプリとして使えます（iOSの通知はHTTPS + ホーム画面追加が必要）。\n');
+  if (builtinTls(config)) console.log('初回だけ、表示されるページの手順で証明書をスマホに登録します（通知・カメラ・Face ID に必要）。\n');
 }
 
 function parseFlags(args) {
@@ -58,52 +84,138 @@ function parseFlags(args) {
   return { flags, rest };
 }
 
-async function readStdin() {
-  if (process.stdin.isTTY) return '';
-  const chunks = [];
-  for await (const c of process.stdin) chunks.push(c);
-  return Buffer.concat(chunks).toString('utf8');
+// Hooks call this with a JSON event on stdin, but plugins may leave stdin open and empty;
+// never wait long for it.
+function readStdin(timeoutMs = 400) {
+  if (process.stdin.isTTY) return Promise.resolve('');
+  return new Promise((resolve) => {
+    const chunks = [];
+    const done = () => {
+      clearTimeout(timer);
+      process.stdin.pause();
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    };
+    const timer = setTimeout(done, timeoutMs);
+    process.stdin.on('data', (c) => chunks.push(c));
+    process.stdin.on('end', done);
+    process.stdin.on('error', done);
+  });
 }
 
+function postLocal(config, path, body) {
+  const https = builtinTls(config) || (config.tls && config.tls.cert);
+  const lib = require(https ? 'https' : 'http');
+  const host = config.host === '0.0.0.0' ? '127.0.0.1' : config.host;
+  const payload = Buffer.from(JSON.stringify(body));
+  const options = {
+    host,
+    port: config.port,
+    path,
+    method: 'POST',
+    timeout: 4000,
+    headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json', 'Content-Length': payload.length },
+  };
+  // Trust our own CA for the loopback call.
+  if (builtinTls(config)) options.ca = fs.readFileSync(require('../src/tls').CA_CRT);
+  else if (https) options.rejectUnauthorized = false;
+  return new Promise((resolve, reject) => {
+    const req = lib.request(options, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+// Called by agents' hooks: must stay silent on stdout and never fail the agent.
 async function notify(config, args) {
   const { flags, rest } = parseFlags(args);
-  let message = rest.join(' ');
-  let status = flags.status;
-  // Claude Code hooks pass a JSON event on stdin; turn it into a readable message.
+  let payload = null;
   const stdin = await readStdin();
-  if (stdin.trim()) {
+  // Codex's legacy `notify` passes the event as a JSON command-line argument instead of stdin.
+  const jsonArg = rest.length && /^\s*\{/.test(rest[rest.length - 1]) ? rest.pop() : '';
+  for (const text of [stdin, jsonArg]) {
+    if (!text.trim()) continue;
     try {
-      const event = JSON.parse(stdin);
-      if (!message) message = event.message || (event.hook_event_name === 'Stop' ? 'タスクが完了しました' : '');
-      if (!status) status = event.hook_event_name === 'Notification' ? 'waiting' : 'idle';
+      payload = JSON.parse(text);
     } catch {
-      if (!message) message = stdin.trim().slice(0, 500);
+      if (!rest.length) rest.push(text.trim().slice(0, 500));
     }
   }
-  const session = flags.session || process.env.REMOTA_SESSION || '';
-  const scheme = config.tls && config.tls.cert ? 'https' : 'http';
-  const host = config.host === '0.0.0.0' ? '127.0.0.1' : config.host;
-  const res = await fetch(`${scheme}://${host}:${config.port}/api/notify`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: flags.title, message: message || '完了しました', session, status }),
-  });
-  if (!res.ok) {
-    console.error(`notify failed: ${res.status}`);
-    process.exitCode = 1;
+  const { parseEvent } = require('../src/agents');
+  const parsed = parseEvent(flags.agent || '', flags.event || '', payload);
+  const message = rest.join(' ').trim() || parsed.message;
+  const status = flags.status || (flags.event || payload ? parsed.status : undefined);
+  try {
+    const code = await postLocal(config, '/api/notify', {
+      title: flags.title,
+      message,
+      session: flags.session || process.env.REMOTA_SESSION || '',
+      status,
+      agent: flags.agent,
+      cwd: (payload && payload.cwd) || process.cwd(),
+    });
+    if (code >= 400) console.error(`remota notify: HTTP ${code}`);
+  } catch (err) {
+    console.error(`remota notify: ${err.message}`);
   }
 }
 
-function hooks() {
-  const cmd = 'remota notify';
-  const json = {
-    hooks: {
-      Stop: [{ hooks: [{ type: 'command', command: `${cmd} --status idle` }] }],
-      Notification: [{ hooks: [{ type: 'command', command: `${cmd} --status waiting` }] }],
-    },
-  };
-  console.log('~/.claude/settings.json に以下をマージしてください:\n');
-  console.log(JSON.stringify(json, null, 2));
+function hooks(args) {
+  const agents = require('../src/agents');
+  const [sub, ...names] = args;
+  if (!sub || sub === 'list' || sub === 'status') {
+    console.log('コーディングエージェントの通知連携:\n');
+    for (const a of agents.list()) {
+      const state = a.error ? `エラー: ${a.error}` : a.installed ? '連携済み' : a.present ? '未設定' : '未検出';
+      console.log(`  ${a.installed ? '●' : '○'} ${a.name.padEnd(20)} ${state.padEnd(8)} ${a.via}`);
+    }
+    console.log('\n設定: remota hooks install [名前..]（省略時は検出されたものすべて）');
+    console.log('上記以外のエージェントも画面出力から承認待ち/完了を推定します。任意のスクリプトからは remota notify "メッセージ"。');
+    return;
+  }
+  if (sub !== 'install' && sub !== 'uninstall') throw new Error(`unknown: hooks ${sub}`);
+  const targets = names.length ? names : agents.list().filter((a) => (sub === 'install' ? a.present : a.installed)).map((a) => a.id);
+  if (!targets.length) {
+    console.log(sub === 'install' ? '対象のエージェントが見つかりませんでした。名前を指定してください（例: remota hooks install opencode）' : '連携済みのエージェントはありません');
+    return;
+  }
+  for (const id of targets) {
+    try {
+      agents[sub](id);
+      const a = agents.list().find((x) => x.id === id);
+      console.log(`${sub === 'install' ? '✓ 連携しました' : '✓ 外しました'}: ${a.name}（${a.file}）`);
+    } catch (err) {
+      console.log(`✗ ${id}: ${err.message}`);
+      process.exitCode = 1;
+    }
+  }
+  if (sub === 'install') console.log('\n起動中のエージェントは再起動すると反映されます。');
+}
+
+function ca(args) {
+  const tls = require('../src/tls');
+  const [sub, file] = args;
+  if (!sub) {
+    const info = tls.caInfo();
+    console.log(`${info.subject}\nSHA-256: ${info.fingerprint}\n有効期限: ${info.validTo}\nファイル: ${tls.CA_CRT}`);
+    return;
+  }
+  if (sub === 'export') {
+    if (!file) throw new Error('書き出し先のファイルを指定してください: remota ca export ca.json');
+    fs.writeFileSync(file, tls.exportCa(), { mode: 0o600 });
+    console.log(`書き出しました: ${file}\n秘密鍵を含みます。他の機器へ移したら削除してください。`);
+    return;
+  }
+  if (sub === 'import') {
+    if (!file) throw new Error('読み込むファイルを指定してください: remota ca import ca.json');
+    tls.importCa(fs.readFileSync(file, 'utf8'));
+    console.log('読み込みました。Remota を再起動すると、この証明書で HTTPS を提供します。');
+    return;
+  }
+  throw new Error(`unknown: ca ${sub}`);
 }
 
 async function main() {
@@ -113,15 +225,19 @@ async function main() {
   switch (cmd) {
     case 'start': {
       const { createServer } = require('../src/server');
-      const { server, sessions, useTls } = createServer(config);
+      const { server, setupServer, httpPort, sessions, useTls } = createServer(config);
       server.listen(config.port, config.host, () => {
         console.log(`Remota listening on ${useTls ? 'https' : 'http'}://${config.host}:${config.port}`);
         console.log(`tmux による永続セッション: ${sessions.useTmux ? '有効' : '無効（tmux をインストールすると有効）'}`);
-        printUrls(config, useTls);
+        if (setupServer) {
+          setupServer.on('error', (err) => console.warn(`証明書の設定ページを起動できません（ポート ${httpPort}）: ${err.message}`));
+          setupServer.listen(httpPort, config.host, () => printUrls(config));
+        } else printUrls(config);
       });
       const stop = () => {
         // tmux sessions keep running; only the attach clients go away.
         server.close();
+        if (setupServer) setupServer.close();
         process.exit(0);
       };
       process.on('SIGINT', stop);
@@ -129,7 +245,7 @@ async function main() {
       break;
     }
     case 'url':
-      printUrls(config, Boolean(config.tls && config.tls.cert));
+      printUrls(config);
       break;
     case 'token':
       if (args.includes('--rotate')) {
@@ -143,7 +259,10 @@ async function main() {
       await notify(config, args);
       break;
     case 'hooks':
-      hooks();
+      hooks(args);
+      break;
+    case 'ca':
+      ca(args);
       break;
     case 'help':
     case '--help':

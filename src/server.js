@@ -11,6 +11,9 @@ const { CONFIG_DIR } = require('./config');
 const { Notifier } = require('./notify');
 const { SessionManager } = require('./sessions');
 const workspace = require('./workspace');
+const agents = require('./agents');
+const tls = require('./tls');
+const { renderSetupPage } = require('./setup-page');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MODULES_DIR = path.join(__dirname, '..', 'node_modules');
@@ -185,6 +188,9 @@ function createServer(config) {
     }
 
     if (rateLimited(req)) return send(res, 429, { error: 'too many attempts' });
+    // Lets a setup page or the app check whether this machine's certificate is trusted yet.
+    if (route === 'GET /api/ping') return send(res, 200, { ok: true, hostname: os.hostname() });
+
     if (!isAuthed(req)) {
       if (req.headers.authorization) recordFailure(req);
       return send(res, 401, { error: 'unauthorized' });
@@ -200,12 +206,25 @@ function createServer(config) {
         user: os.userInfo().username,
         tmux: sessions.useTmux,
         defaultCwd: config.defaultCwd,
-        presets: config.presets,
+        presets: config.presets.map((p) => ({ ...p, available: !p.command || agents.onPath(p.command.split(/\s+/)[0]) })),
+        tls: tlsMode,
         vapidPublicKey: notifier.publicKey,
         stats: await workspace.machineStats(),
       });
     }
     if (route === 'GET /api/sessions') return send(res, 200, sessions.list());
+
+    // Coding agents on this machine and whether their notifications are wired to Remota.
+    if (route === 'GET /api/agents') return send(res, 200, agents.list());
+    const am = url.pathname.match(/^\/api\/agents\/([a-z]+)\/(install|uninstall)$/);
+    if (am && req.method === 'POST') {
+      try {
+        agents[am[2]](am[1]);
+        return send(res, 200, agents.list().find((a) => a.id === am[1]));
+      } catch (err) {
+        return send(res, err.status || 400, { error: err.message });
+      }
+    }
 
     if (route === 'POST /api/sessions') {
       const body = await readJsonBody(req);
@@ -313,9 +332,18 @@ function createServer(config) {
     if (route === 'POST /api/notify') {
       const body = await readJsonBody(req);
       const session = body.session && sessions.get(body.session);
-      const title = String(body.title || (session ? session.name : 'Remota')).slice(0, 120);
+      // Agents started outside Remota have no session; name them by agent and folder instead.
+      const agent = agents.AGENTS.find((a) => a.id === body.agent);
+      const where = body.cwd ? path.basename(String(body.cwd)) : '';
+      const fallback = [agent ? agent.name : 'Remota', where].filter(Boolean).join(' · ');
+      const kind = body.status === 'waiting' ? '承認待ち' : body.status === 'idle' ? '完了' : '';
+      const title = String(body.title || `${session ? session.name : fallback}${kind ? `: ${kind}` : ''}`).slice(0, 120);
       const message = String(body.message || body.body || '完了しました').slice(0, 500);
-      if (session && body.status) session.setStatus(body.status === 'waiting' ? 'waiting' : 'idle');
+      if (session && body.status) {
+        session.setStatus(body.status === 'waiting' ? 'waiting' : 'idle');
+        // The agent told us itself; the screen-reading guess must not notify a second time.
+        session.notifiedCycle = true;
+      }
       await notifier.send({ title, body: message, sessionId: session ? session.id : undefined });
       return send(res, 200, { ok: true });
     }
@@ -360,10 +388,51 @@ function createServer(config) {
     }
   }
 
-  const useTls = Boolean(config.tls && config.tls.cert && config.tls.key);
-  const server = useTls
-    ? https.createServer({ cert: fs.readFileSync(config.tls.cert), key: fs.readFileSync(config.tls.key) }, handler)
-    : http.createServer(handler);
+  const customTls = Boolean(config.tls && config.tls.cert && config.tls.key);
+  const builtinTls = !customTls && config.https !== false;
+  const useTls = customTls || builtinTls;
+  const tlsMode = builtinTls ? { builtin: true, ca: tls.caInfo().fingerprint } : { builtin: false };
+  let server;
+  if (customTls) {
+    server = https.createServer({ cert: fs.readFileSync(config.tls.cert), key: fs.readFileSync(config.tls.key) }, handler);
+  } else if (builtinTls) {
+    const creds = tls.serverCredentials(config.tlsNames);
+    server = https.createServer({ key: creds.key, cert: creds.cert }, handler);
+    // Joining a VPN or getting a new DHCP lease adds addresses; reissue so they stay covered.
+    const recheck = setInterval(() => {
+      try {
+        const next = tls.serverCredentials(config.tlsNames);
+        if (next.changed) server.setSecureContext({ key: next.key, cert: next.cert });
+      } catch (err) {
+        console.warn(`[remota] certificate refresh failed: ${err.message}`);
+      }
+    }, 60000);
+    recheck.unref();
+    server.on('close', () => clearInterval(recheck));
+  } else {
+    server = http.createServer(handler);
+  }
+
+  // Plain-HTTP side door for first contact: serves the CA certificate and a setup page that walks
+  // the phone through trusting it, then hands over to the HTTPS app.
+  let setupServer = null;
+  const httpPort = config.httpPort === false ? null : config.httpPort || config.port - 1;
+  if (builtinTls && httpPort) {
+    setupServer = http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://localhost');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (url.pathname === '/remota-ca.crt') {
+        res.writeHead(200, { 'Content-Type': 'application/x-x509-ca-cert', 'Content-Disposition': 'attachment; filename="remota-ca.crt"' });
+        return res.end(tls.caCertDer());
+      }
+      if (url.pathname === '/setup') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(renderSetupPage({ httpsPort: config.port, caInfo: tls.caInfo(), hostname: os.hostname() }));
+      }
+      res.writeHead(302, { Location: '/setup' });
+      res.end();
+    });
+  }
 
   // Terminal output is highly compressible text; deflate makes a big difference on mobile data.
   const wss = new WebSocketServer({
@@ -449,7 +518,7 @@ function createServer(config) {
   }, 20000);
   server.on('close', () => clearInterval(heartbeat));
 
-  return { server, sessions, notifier, useTls };
+  return { server, setupServer, httpPort, sessions, notifier, useTls, builtinTls };
 }
 
 module.exports = { createServer, cookieValue };

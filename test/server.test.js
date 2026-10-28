@@ -10,6 +10,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'remota-test-'));
 process.env.REMOTA_HOME = home;
 // Plain PTYs keep the test independent of whether tmux is installed.
 process.env.REMOTA_TMUX = 'false';
+process.env.REMOTA_HTTPS = 'false';
 
 const WebSocket = require('ws');
 const { loadConfig } = require('../src/config');

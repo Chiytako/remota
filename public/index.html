@@ -184,7 +184,7 @@
 
         <div class="group-title">エージェント連携</div>
         <div class="group">
-          <div class="row"><span class="row-main"><small>各機器で <code>remota hooks</code> を実行し、表示された設定を Claude Code に加えると、完了・承認待ちを確実に通知できます。</small></span></div>
+          <div class="row"><span class="row-main"><small>Claude Code・Codex・OpenCode・pi・Gemini CLI・Copilot CLI・Cursor CLI・Droid・Aider は、「機器」タブの「通知連携」から各機器に設定できます（機器上で <code>remota hooks install</code> でも可）。その他のエージェントも画面の表示から推定して通知します。</small></span></div>
         </div>
         <p class="text-3 small center">Remota — 課金なし・セルフホスト</p>
       </div>
@@ -281,6 +281,12 @@
     <button class="btn wide" id="btn-qr-photo"><svg class="ico"><use href="#i-camera"/></svg>写真から読み取る</button>
     <input type="file" id="qr-file" accept="image/*" hidden>
     <p class="text-3 small">機器で <code>remota</code> を起動したときに表示される QR コードを読み取ります。</p>
+  </dialog>
+
+  <dialog id="dlg-agents" class="sheet">
+    <div class="sheet-head"><span></span><h2>通知連携</h2><button type="button" class="link-btn strong" data-close>完了</button></div>
+    <p class="text-2 small"><b id="agents-device"></b> のコーディングエージェントに、完了・承認待ちを Remota へ知らせる設定を入れます。一覧にないエージェントも画面の表示から推定して通知します。</p>
+    <ul id="agent-list" class="agent-list"></ul>
   </dialog>
 
   <dialog id="dlg-switch" class="sheet">

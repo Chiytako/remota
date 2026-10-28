@@ -222,11 +222,15 @@ function normalizeDeviceUrl(raw) {
     throw new Error('URLの形式が正しくありません（例: http://192.168.1.20:7681）');
   }
   if (!/^https?:$/.test(url.protocol)) throw new Error('http:// または https:// で始まるURLを指定してください');
-  // A page loaded over HTTPS may not call plain-HTTP machines (mixed content).
-  if (location.protocol === 'https:' && url.protocol === 'http:') {
-    throw new Error('このアプリはHTTPSで開かれているため、http:// の機器には接続できません。機器側もHTTPS（Tailscale serve など）にしてください');
+  const params = new URLSearchParams(url.hash.slice(1));
+  const token = params.get('token') || url.searchParams.get('token') || '';
+  // A machine's QR code points at its certificate setup page (http://host:7680/setup#…&https=7681);
+  // the app talks to the HTTPS port named there.
+  if (url.pathname === '/setup') {
+    return { url: `https://${url.hostname.includes(':') ? `[${url.hostname}]` : url.hostname}:${params.get('https') || Number(url.port || 80) + 1}`, token };
   }
-  const token = new URLSearchParams(url.hash.slice(1)).get('token') || url.searchParams.get('token') || '';
+  // An HTTPS page may not call plain-HTTP machines (mixed content); Remota serves HTTPS by default.
+  if (location.protocol === 'https:' && url.protocol === 'http:') url.protocol = 'https:';
   return { url: url.origin, token };
 }
 
@@ -299,7 +303,14 @@ async function addDevice({ name, url, token }) {
   const target = normalizeDeviceUrl(url);
   const dev = { id: randomId().slice(0, 8), name: '', url: target.url, token: String(token || target.token || '').trim() };
   if (!dev.token) throw new Error('アクセストークンを入力してください（`remota token` で表示されます）');
-  const info = await request(dev, 'info', { timeout: 8000 });
+  const info = await request(dev, 'info', { timeout: 8000 }).catch((ex) => {
+    // Most first-time failures over HTTPS are a certificate the phone doesn't trust yet.
+    if (ex.status === 0 && dev.url.startsWith('https:')) {
+      const u = new URL(dev.url);
+      throw new Error(`接続できません。この機器の証明書がまだスマホに登録されていない可能性があります。http://${u.hostname}:${Number(u.port || 443) - 1}/setup を開いて証明書を登録してください（各機器で同じ証明書を使えば登録は1回: remota ca export / import）。`);
+    }
+    throw ex;
+  });
   const existing = devices.list.find((d) => d.url === dev.url);
   if (existing) {
     existing.token = dev.token;
@@ -341,8 +352,29 @@ function sortedSessions(list = state.sessions) {
   return [...list].sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || b.lastOutputAt - a.lastOutputAt);
 }
 
+const AGENT_KINDS = [
+  ['claude', /claude/i],
+  ['codex', /codex/i],
+  ['opencode', /opencode/i],
+  ['gemini', /gemini/i],
+  ['copilot', /copilot/i],
+  ['cursor', /cursor/i],
+  ['droid', /droid/i],
+  ['aider', /aider/i],
+  ['qwen', /qwen/i],
+  ['pi', /^\s*pi(\s|$)/],
+];
+
 function agentKind(command) {
-  return /claude/i.test(command || '') ? 'claude' : /codex/i.test(command || '') ? 'codex' : 'shell';
+  const hit = AGENT_KINDS.find(([, re]) => re.test(command || ''));
+  return hit ? hit[0] : 'shell';
+}
+
+// Claude, Codex and the shell have drawn icons; other agents get a lettered tile in their colour.
+function agentIcon(kind) {
+  if (kind === 'claude' || kind === 'codex' || kind === 'shell') return `<span class="agent ${kind}"><svg class="ico"><use href="#i-${kind}"/></svg></span>`;
+  const letter = { opencode: 'oc', gemini: 'G', copilot: 'Co', cursor: 'Cu', droid: 'D', aider: 'Ai', qwen: 'Q', pi: 'π' }[kind] || '?';
+  return `<span class="agent ${kind}"><b>${letter}</b></span>`;
 }
 
 function sessionCard(s) {
@@ -350,7 +382,7 @@ function sessionCard(s) {
   li.className = `session-card ${s.status}${s.stale ? ' stale' : ''}`;
   const kind = agentKind(s.command);
   li.innerHTML = `
-    <span class="agent ${kind}"><svg class="ico"><use href="#i-${kind}"/></svg></span>
+    ${agentIcon(kind)}
     <span class="name"></span>
     <span class="badge ${s.status}">${STATUS_LABEL[s.status] || s.status}</span>
     <span class="meta"></span>
@@ -558,11 +590,13 @@ async function openNewDialog(nodeId) {
 async function loadNodeDefaults(id) {
   const live = state.live.get(id) || {};
   const info = live.info || (await devApi(id, 'info').catch(() => null));
-  const presets = (info && info.presets) || [{ name: 'Shell', command: '' }];
+  // Only agents installed on that machine are offered.
+  const presets = ((info && info.presets) || [{ name: 'Shell', command: '' }]).filter((p) => p.available !== false);
   const chips = $('#preset-list');
   chips.replaceChildren();
   const pick = (i) => {
     state.presetIndex = i;
+    state.presetCommand = presets[i].command;
     $('#new-command').value = presets[i].command;
     chips.querySelectorAll('.chip').forEach((c, j) => c.classList.toggle('on', i === j));
   };
@@ -574,7 +608,8 @@ async function loadNodeDefaults(id) {
     b.addEventListener('click', () => pick(i));
     chips.append(b);
   });
-  pick(Math.min(prefs.get('lastPreset', 1), presets.length - 1));
+  const last = presets.findIndex((p) => p.command === prefs.get('lastPresetCommand', 'claude'));
+  pick(last >= 0 ? last : Math.min(1, presets.length - 1));
 
   const history = prefs.get(`cwdHistory.${id}`, []);
   $('#new-cwd').value = history[0] || (info && info.defaultCwd) || '';
@@ -600,7 +635,7 @@ $('#new-form').addEventListener('submit', async (e) => {
       method: 'POST',
       body: JSON.stringify({ name: $('#new-name').value, cwd, command: $('#new-command').value.trim() }),
     });
-    prefs.set('lastPreset', state.presetIndex);
+    prefs.set('lastPresetCommand', state.presetCommand);
     if ($('#new-fav').checked) addFavorite({ node, cwd, command: $('#new-command').value.trim(), name: $('#new-name').value.trim() });
     prefs.set(`cwdHistory.${node}`, [cwd, ...prefs.get(`cwdHistory.${node}`, []).filter((d) => d !== cwd)].slice(0, 10));
     $('#dlg-new').close();
@@ -668,6 +703,7 @@ function renderDevices() {
       ${n.online === false ? '<p class="error"></p>' : statsHtml(n.info && n.info.stats)}
       <div class="device-actions">
         <button type="button" class="btn small" data-act="new"${n.online === false ? ' disabled' : ''}>＋ 新規</button>
+        <button type="button" class="btn small" data-act="agents"${n.online === false ? ' disabled' : ''}>通知連携</button>
         <button type="button" class="btn small" data-act="rename">名前</button>
         <button type="button" class="btn small" data-act="remove">外す</button>
       </div>`;
@@ -678,6 +714,7 @@ function renderDevices() {
     li.querySelector('.badge').textContent = n.online === false ? 'オフライン' : `${sessions}件 · ${n.latency ?? '–'}ms`;
     if (n.online === false) li.querySelector('.error').textContent = n.error || '接続できません';
     li.querySelector('[data-act="new"]').addEventListener('click', () => openNewDialog(n.id));
+    li.querySelector('[data-act="agents"]').addEventListener('click', () => openAgents(n.id));
     li.querySelector('[data-act="rename"]').addEventListener('click', () => {
       const name = prompt('機器の名前', n.name);
       const dev = devices.get(n.id);
@@ -1832,7 +1869,7 @@ async function updatePushState() {
   if (!pushSupported()) {
     const ios = /iPhone|iPad/.test(navigator.userAgent);
     el.textContent = !window.isSecureContext
-      ? 'HTTPS接続が必要です（READMEのTailscale手順を参照）'
+      ? 'HTTPS接続が必要です（機器の設定ページで証明書を登録してください）'
       : ios
         ? 'iOSはホーム画面に追加したアプリから有効化できます'
         : 'このブラウザは非対応です';
@@ -2060,7 +2097,7 @@ function renderQuick() {
     const kind = agentKind(f.command);
     const b = document.createElement('button');
     b.className = 'quick';
-    b.innerHTML = `<span class="agent ${kind}"><svg class="ico"><use href="#i-${kind}"/></svg></span><strong></strong><small></small>`;
+    b.innerHTML = `${agentIcon(kind)}<strong></strong><small></small>`;
     b.querySelector('strong').textContent = f.name;
     b.querySelector('small').textContent = `${state.nodes.length > 1 ? `${dev.name} · ` : ''}${f.command || 'shell'}`;
     let timer = null;
@@ -2429,6 +2466,53 @@ $('#btn-text-next').addEventListener('click', () => {
   textIndex = (textIndex + 1) % textMatches.length;
   focusMatch();
 });
+
+// ---------- coding agent notification integration ----------
+
+// Each agent's own hook/plugin tells Remota when it finishes or needs approval — more reliable
+// than reading the screen. This sheet turns that on per machine, from the phone.
+async function openAgents(nodeId) {
+  const dlg = $('#dlg-agents');
+  const dev = devices.get(nodeId);
+  $('#agents-device').textContent = dev ? dev.name : '';
+  const list = $('#agent-list');
+  list.innerHTML = '<li class="text-3">読み込み中…</li>';
+  if (!dlg.open) dlg.showModal();
+  let items;
+  try {
+    items = await devApi(nodeId, 'agents');
+  } catch (ex) {
+    list.innerHTML = '';
+    list.append(Object.assign(document.createElement('li'), { className: 'error', textContent: ex.message }));
+    return;
+  }
+  // Installed agents first, then ones found on the machine, then the rest.
+  items.sort((a, b) => Number(b.installed) - Number(a.installed) || Number(b.present) - Number(a.present));
+  list.replaceChildren();
+  for (const a of items) {
+    const li = document.createElement('li');
+    li.className = `agent-row${a.present || a.installed ? '' : ' absent'}`;
+    li.innerHTML = `${agentIcon(a.id)}<div class="row-main"><span></span><small></small></div><input type="checkbox" class="switch">`;
+    li.querySelector('.row-main span').textContent = a.name;
+    li.querySelector('small').textContent = a.error ? a.error : `${a.present ? '' : '未検出 · '}${a.via}`;
+    const toggle = li.querySelector('input');
+    toggle.checked = a.installed;
+    toggle.setAttribute('aria-label', `${a.name} の通知連携`);
+    toggle.addEventListener('change', async () => {
+      toggle.disabled = true;
+      try {
+        await devApi(nodeId, `agents/${a.id}/${toggle.checked ? 'install' : 'uninstall'}`, { method: 'POST' });
+        toast(toggle.checked ? `${a.name}: 連携しました（起動中なら再起動で反映）` : `${a.name}: 連携を外しました`, { ms: 3000 });
+      } catch (ex) {
+        toggle.checked = !toggle.checked;
+        toast(ex.message, { ms: 4000 });
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+    list.append(li);
+  }
+}
 
 // ---------- routing & boot ----------
 

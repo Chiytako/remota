@@ -53,9 +53,15 @@
 - 音声入力（Web Speech API / キーボードのマイク）
 - 画像・ファイル添付（貼り付けにも対応）→ パスを入力欄に挿入してエージェントに渡せる
 
-### 通知
-- Web Push（iOS 16.4+ のホーム画面アプリ / Android / PC）＋ ntfy・任意 Webhook
-- 出力からの自動判定（承認待ち / 完了）と Claude Code フック連携。通知タップで該当セッションを開く
+### 通知（主要なコーディングエージェントに対応）
+- Web Push（iOS 16.4+ のホーム画面アプリ / Android / PC）＋ ntfy・任意 Webhook。通知タップで該当セッションを開く
+- **各エージェント公式の仕組みで「完了」「承認待ち」を通知**: Claude Code・Codex CLI・Gemini CLI・OpenCode・pi・GitHub Copilot CLI・Cursor CLI・Factory Droid・Aider。アプリの「機器」タブ →「通知連携」からワンタップで設定
+- それ以外のエージェントも、画面の表示（承認プロンプトや作業中の表示）から推定して通知
+
+### HTTPS を内蔵（外部サービス不要）
+- Remota が機器ごとに専用の認証局を作り、LAN・VPN の IP アドレスやホスト名の証明書を自動発行（IP が変わっても自動で再発行）
+- スマホには最初に一度だけ証明書を登録（QR から開くページが手順を案内し、登録できたか自動で確認）
+- 証明書を全機器で共通にすれば、スマホへの登録は1回だけ（`remota ca export` / `remota ca import`）
 
 ## 必要なもの
 
@@ -71,15 +77,18 @@ npm install
 npm start          # または: node bin/remota.js
 ```
 
-起動するとログイン用 URL と QR コードが表示されます。スマホで読み取って開き、
-**共有 → ホーム画面に追加** するとアプリとして使えます。
+起動すると URL と QR コードが表示されます。スマホで読み取ると設定ページが開くので、
+
+1. 案内に従って**証明書を登録**（初回のみ。iOS: ダウンロード → 設定でプロファイルをインストール → 証明書信頼設定でオン）
+2. ページに戻ると自動で確認され、「Remota を開く」が表示される
+3. 開いたら **共有 → ホーム画面に追加** でアプリとして使えます（通知・カメラ・Face ID は HTTPS + ホーム画面のアプリで有効）
 
 グローバルコマンドとして使う場合は `npm link` を実行すると `remota` コマンドが使えます。
 
 ### 複数の機器を登録する
 
-1. 管理したい各機器で Remota を起動します（`npm start`）。起動時に `http://…:7681/#token=…` 形式の URL と QR コードが表示されます（あとから `remota url` でも表示可）。
-2. 1台目はその URL / QR をスマホで開き、「ホーム画面に追加」します。
+1. 管理したい各機器で Remota を起動します（`npm start`）。起動時に QR コードが表示されます（あとから `remota url` でも表示可）。
+2. 1台目は上の手順でスマホに登録し、「ホーム画面に追加」します。
 3. 2台目以降は、アプリの「機器」タブ → **「QRで追加」で QR コードを読み取る**か、「URLで追加」に URL をトークン付きのまま貼り付けます。追加時に接続とトークンを確認します。
 
 ```
@@ -90,33 +99,51 @@ npm start          # または: node bin/remota.js
 
 - アプリ本体はスマホにキャッシュされるので、最初に開いた機器が止まっていても起動し、他の機器を操作できます。
 - 機器リストはアプリを開いた URL ごとにスマホへ保存されます。別のスマホやブラウザへは、機器の管理画面の「書き出し」→「読み込み」で移せます（トークンを含むので取り扱いに注意）。
-- アプリを HTTPS で開いた場合、ブラウザの制約で http:// の機器には接続できません。全機器を同じ方式（Tailscale serve での HTTPS 推奨）にそろえてください。
+- 機器ごとに証明書の登録が必要です。**全機器で同じ証明書を使うと登録は1回で済みます**:
+  ```bash
+  remota ca export ca.json     # 1台目で書き出し（秘密鍵を含むので扱いに注意）
+  remota ca import ca.json     # 他の機器で読み込み → Remota を再起動
+  ```
 
 #### 通知の仕組み
 iOS のプッシュ通知は「購読時の鍵で署名された通知」しか受け付けません。Remota ではスマホ側で鍵を作り、通知を有効にしたときと機器を追加したときに各機器へ渡します。どの機器もその鍵で署名してスマホへ直接通知します。
 
-### 外出先から使う（推奨: Tailscale）
+### 外出先から使う
 
-ポート開放はせず、[Tailscale](https://tailscale.com/) などの VPN 経由で接続してください。
-iOS のプッシュ通知とクリップボードには **HTTPS** が必要です。Tailscale なら次の1行で HTTPS 化できます。
+Remota 自体は LAN 内でもそのまま HTTPS で使えます。外出先からは、ポートをインターネットに開放せず、
+WireGuard・Tailscale・ZeroTier などの **VPN でスマホと機器を同じネットワークにつなぐ**だけで使えます。
+VPN のアドレス（例: 100.x.x.x）も Remota の証明書に自動で含まれるため、追加の HTTPS 設定は不要です。
 
-```bash
-tailscale serve --bg 7681
-# → https://<マシン名>.<tailnet>.ts.net/ でアクセス
-```
+自前の証明書（独自ドメインなど）を使う場合は、設定ファイルの `tls.cert` / `tls.key` にパスを指定します。
+HTTPS を使わない場合は `"https": false`（通知・カメラ・Face ID は使えなくなります）。
 
-自前の証明書を使う場合は設定ファイルの `tls.cert` / `tls.key` にパスを指定します。
+### コーディングエージェントの通知連携
 
-### 通知を確実にする（Claude Code フック）
-
-出力からの自動判定に加えて、Claude Code のフックから通知させると取りこぼしがありません。
+画面の表示から推定するだけでなく、各エージェント自身の仕組み（フック・プラグイン）から「完了」「承認待ち」を受け取ると、取りこぼしがありません。
+アプリの「機器」タブ →「通知連携」でオン/オフでき、機器上のコマンドでも設定できます。
 
 ```bash
-remota hooks   # ~/.claude/settings.json に貼る JSON を表示
+remota hooks                    # 対応状況の一覧
+remota hooks install            # 見つかったエージェントすべてに設定
+remota hooks install opencode pi
+remota hooks uninstall codex
 ```
 
-Remota 内で起動したセッションには `REMOTA_SESSION` 環境変数が入っているため、通知タップで該当セッションが開きます。
-フックは任意のスクリプトからも使えます: `remota notify "ビルド完了" --title CI`
+| エージェント | 設定先 | 通知されるタイミング |
+| --- | --- | --- |
+| Claude Code | `~/.claude/settings.json`（hooks） | Stop / Notification |
+| Codex CLI | `~/.codex/hooks.json` | Stop / PermissionRequest |
+| Gemini CLI | `~/.gemini/settings.json`（hooks） | AfterAgent / Notification |
+| OpenCode | `~/.config/opencode/plugins/remota-notify.js` | session.idle / permission.asked |
+| pi | `~/.pi/agent/extensions/remota-notify.ts` | agent_end |
+| GitHub Copilot CLI | `~/.copilot/hooks/remota-notify.json` | agentStop / notification / permissionRequest |
+| Cursor CLI | `~/.cursor/hooks.json` | stop |
+| Factory Droid | `~/.factory/settings.json`（hooks） | Stop / Notification |
+| Aider | `~/.aider.conf.yml` | 応答待ちになったとき（notifications-command） |
+
+- 既存の設定は残したまま Remota の分だけを追加・削除します。初回の変更前に元のファイルを `*.remota-backup` として保存します。
+- Remota の外で起動したエージェントからの通知も届きます（タイトルは「エージェント名 · フォルダ名」）。
+- その他のエージェントやスクリプトからは: `remota notify "ビルド完了" --status idle`
 
 ### ntfy / Webhook
 
@@ -134,10 +161,13 @@ Remota 内で起動したセッションには `REMOTA_SESSION` 環境変数が�
 | `defaultCwd` | ホーム | 新規セッションの既定ディレクトリ |
 | `idleSeconds` | `8` | 出力が止まってから「完了」とみなすまでの秒数 |
 | `webhookUrl` | `""` | ntfy または任意の Webhook |
-| `presets` | Shell / Claude Code / Codex | 新規セッション画面の起動プリセット |
-| `tls` | 空 | HTTPS 用の証明書・鍵のパス |
+| `presets` | 主要エージェント一式 | 新規セッション画面の候補（その機器にインストール済みのものだけ表示） |
+| `https` | `true` | 内蔵 HTTPS（独自の認証局で証明書を自動発行） |
+| `httpPort` | `0`（= port − 1） | 証明書の設定ページ用の HTTP ポート。`false` で無効 |
+| `tlsNames` | `[]` | 証明書に追加するホスト名 / IP |
+| `tls` | 空 | 自前の証明書・鍵のパス（指定すると内蔵 HTTPS の代わりに使用） |
 
-環境変数 `REMOTA_PORT` `REMOTA_HOST` `REMOTA_TOKEN` `REMOTA_TMUX` `REMOTA_HOME` で上書きできます。
+環境変数 `REMOTA_PORT` `REMOTA_HOST` `REMOTA_TOKEN` `REMOTA_HTTPS` `REMOTA_HTTP_PORT` `REMOTA_TMUX` `REMOTA_HOME` で上書きできます。
 
 ### PC から同じセッションに入る
 
@@ -150,7 +180,8 @@ tmux -L remota attach -t remota_<id>
 
 - アクセスにはランダム生成のトークンが必要。アプリは各機器のトークンを毎回明示的に送る（WebSocket はサブプロトコルで送信し、サーバーはトークンを返さない）
 - 自動送信される Cookie での接続は同一オリジンのみ許可（他サイトからの乗っ取り対策）。認証失敗は IP ごとにレート制限
-- **このアプリはシェルへのフルアクセスを提供します。** インターネットへ直接公開せず、VPN（Tailscale 等）経由で使ってください
+- 通信は内蔵 HTTPS で暗号化。証明書の認証局は各機器の中だけで作られ、秘密鍵は外に出ません（`remota ca export` を実行したときを除く）
+- **このアプリはシェルへのフルアクセスを提供します。** インターネットへ直接公開せず、LAN 内または VPN 経由で使ってください
 - トークンの再発行: `remota token --rotate`
 
 ## 開発
@@ -167,6 +198,9 @@ src/server.js      HTTP API・WebSocket・認証・アップロード
 src/sessions.js    PTY / tmux セッション管理、状態判定と通知のトリガー
 src/detect.js      出力から「承認待ち」「作業中」を推定
 src/workspace.js   git 差分・ファイル閲覧・機器の状態（読み取り専用）
+src/agents.js      各コーディングエージェントの通知連携（フック・プラグインの設定）
+src/tls.js         内蔵 HTTPS（認証局と証明書の発行・更新）
+src/setup-page.js  証明書の登録を案内する設定ページ
 src/notify.js      Web Push と Webhook
 public/            PWA（xterm.js、Service Worker、マニフェスト）
 ```

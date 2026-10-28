@@ -420,6 +420,20 @@ dialog textarea#edit-text { font-family: var(--mono); font-size: 14px; margin-bo
 .pick-list li { font: calc(13px * var(--ui-scale))/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
 .switch-list li:active, .pick-list li:active { background: var(--surface-3); }
 
+.agent b { font: 800 13px/1 -apple-system, sans-serif; letter-spacing: -.02em; }
+.agent.opencode { background: color-mix(in srgb, #8b8b8b 22%, var(--surface)); color: var(--text); }
+.agent.gemini { background: color-mix(in srgb, #4f8cf7 22%, var(--surface)); color: #6ea0ff; }
+.agent.copilot { background: color-mix(in srgb, #a371f7 22%, var(--surface)); color: #b48cf8; }
+.agent.cursor { background: color-mix(in srgb, #9aa4b2 22%, var(--surface)); color: var(--text); }
+.agent.droid { background: color-mix(in srgb, #f97316 22%, var(--surface)); color: #fb8f3c; }
+.agent.aider { background: color-mix(in srgb, #14b8a6 22%, var(--surface)); color: #2dd4bf; }
+.agent.qwen { background: color-mix(in srgb, #6366f1 22%, var(--surface)); color: #8b8ef5; }
+.agent.pi { background: color-mix(in srgb, #eab308 22%, var(--surface)); color: #e5b91a; }
+.agent-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.agent-row { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: var(--surface-2); }
+.agent-row .row-main small { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.agent-row.absent { opacity: .55; }
+
 /* QR scanner */
 .qr-stage { position: relative; aspect-ratio: 1; max-height: 52vh; margin: 0 auto 14px; border-radius: 20px; overflow: hidden; background: #000; }
 .qr-stage video { width: 100%; height: 100%; object-fit: cover; display: block; }

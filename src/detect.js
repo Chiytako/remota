@@ -9,19 +9,27 @@ function stripAnsi(text) {
   return text.replace(ANSI_RE, '');
 }
 
-// Prompts where the agent stops and waits for a human decision.
+// Prompts where an agent stops and waits for a human decision. Covers Claude Code, Codex, Gemini
+// CLI, OpenCode, Copilot, Cursor, Droid, Aider and generic y/n prompts; agents with hooks installed
+// report this themselves.
 const WAITING_PATTERNS = [
-  /do you want to (?:proceed|make this edit|create|run|allow|continue)/i,
-  /would you like to (?:proceed|continue|run)/i,
-  /\b(?:allow|approve|deny)\b.*\?/i,
-  /❯\s*1\.\s*yes/i,
-  /\[y\/n\]|\(y\/n\)|\[Y\/n\]|\[y\/N\]/,
+  /do you want to (?:proceed|make this edit|create|run|allow|continue|apply)/i,
+  /would you like to (?:proceed|continue|run|make|apply|allow)/i,
+  /\b(?:allow|approve|deny|reject)\b.*\?/i,
+  /[❯›>●]\s*1[.)]\s*(?:yes|allow|approve|accept)/i,
+  /\b(?:allow once|allow always|always allow|yes, allow|accept once)\b/i,
+  /\b(?:permission (?:required|requested|needed)|requires? (?:your )?(?:approval|permission)|approval (?:required|needed))\b/i,
+  /waiting for (?:your )?(?:input|approval|confirmation|permission)/i,
+  /\[y\/n\]|\(y\/n\)|\[Y\/n\]|\[y\/N\]|\(Y\)es\/\(N\)o/,
   /press enter to (?:continue|confirm)/i,
-  /waiting for (?:your )?(?:input|approval|confirmation)/i,
 ];
 
-// Text the agents print while they are busy.
-const WORKING_PATTERNS = [/esc to interrupt/i, /ctrl\+c to interrupt/i];
+// Text agents show while they are busy.
+const WORKING_PATTERNS = [
+  /\besc(?:ape)? to (?:interrupt|cancel|stop)\b/i,
+  /\bctrl\+c to (?:interrupt|cancel|stop)\b/i,
+  /\(esc to cancel/i,
+];
 
 function classify(recentOutput) {
   const text = stripAnsi(recentOutput).slice(-4000);

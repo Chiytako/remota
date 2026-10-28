@@ -21,13 +21,36 @@ const DEFAULTS = {
   scrollbackBytes: 512 * 1024,
   // Optional: ntfy.sh topic URL or any webhook URL that receives a JSON POST.
   webhookUrl: '',
+  // Built-in HTTPS with Remota's own certificate authority (see src/tls.js). Set false for plain
+  // HTTP, or put your own certificate paths in `tls` to use those instead.
+  https: true,
+  // Plain-HTTP port for the certificate setup page; 0 means "HTTPS port - 1", false disables it.
+  httpPort: 0,
+  // Extra host names / IPs to put in the certificate (e.g. a DNS name for this machine).
+  tlsNames: [],
   tls: { cert: '', key: '' },
+  // Shown when creating a session; only the ones installed on this machine are offered.
   presets: [
     { name: 'Shell', command: '' },
     { name: 'Claude Code', command: 'claude' },
     { name: 'Codex', command: 'codex' },
+    { name: 'OpenCode', command: 'opencode' },
+    { name: 'pi', command: 'pi' },
+    { name: 'Gemini CLI', command: 'gemini' },
+    { name: 'Copilot CLI', command: 'copilot' },
+    { name: 'Cursor CLI', command: 'cursor-agent' },
+    { name: 'Droid', command: 'droid' },
+    { name: 'Aider', command: 'aider' },
+    { name: 'Qwen Code', command: 'qwen' },
   ],
 };
+
+// The preset list written by the first release; configs still holding it get the current list.
+const OLD_DEFAULT_PRESETS = JSON.stringify([
+  { name: 'Shell', command: '' },
+  { name: 'Claude Code', command: 'claude' },
+  { name: 'Codex', command: 'codex' },
+]);
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -58,6 +81,10 @@ function loadConfig() {
   const config = { ...DEFAULTS, ...stored, tls: { ...DEFAULTS.tls, ...(stored.tls || {}) } };
 
   let dirty = false;
+  if (JSON.stringify(stored.presets) === OLD_DEFAULT_PRESETS) {
+    config.presets = DEFAULTS.presets;
+    dirty = true;
+  }
   if (!config.token) {
     config.token = newToken();
     dirty = true;
@@ -81,6 +108,8 @@ function loadConfig() {
   override('host', process.env.REMOTA_HOST);
   override('token', process.env.REMOTA_TOKEN);
   override('tmux', process.env.REMOTA_TMUX);
+  if (process.env.REMOTA_HTTPS !== undefined) override('https', !/^(0|false|off|no)$/i.test(process.env.REMOTA_HTTPS));
+  override('httpPort', process.env.REMOTA_HTTP_PORT && Number(process.env.REMOTA_HTTP_PORT));
   Object.defineProperty(config, 'fileValues', { value: fileValues, enumerable: false });
   return config;
 }
