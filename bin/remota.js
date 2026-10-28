@@ -20,6 +20,9 @@ const HELP = `remota — スマホからAIコーディングエージェント�
   remota notify [メッセージ]      スマホに通知（任意のエージェントやスクリプトから）
       --status <idle|waiting>  --title <t>  --session <id>
 
+  remota service install         バックグラウンドのサービスとして登録（ログイン/起動時に自動起動・自動復帰）
+  remota service uninstall|status|logs|restart
+
   remota ca                      HTTPS 用の証明書（認証局）の情報
   remota ca export <file>        証明書を書き出す（他の機器で共通にするため）
   remota ca import <file>        書き出した証明書を読み込む
@@ -195,6 +198,38 @@ function hooks(args) {
   if (sub === 'install') console.log('\n起動中のエージェントは再起動すると反映されます。');
 }
 
+function service(args) {
+  const svc = require('../src/service');
+  const [sub = 'status'] = args;
+  if (sub === 'install' && args.includes('--print')) {
+    const { file, text } = svc.preview();
+    console.log(`# ${file || '(タスク スケジューラ)'}\n${text}`);
+    return;
+  }
+  const m = svc.manager();
+  if (sub === 'install') {
+    const notes = m.install();
+    console.log(`✓ サービスとして登録しました。ターミナルを閉じても動き続け、ログイン時に自動で起動します。${m.file ? `\n  ${m.file}` : ''}`);
+    for (const n of notes) console.log(`  ※ ${n}`);
+    console.log('  スマホで開くURLとQRは `remota url` でいつでも表示できます。');
+  } else if (sub === 'uninstall') {
+    m.uninstall();
+    console.log('✓ サービスを解除しました（tmux のセッションはそのまま残ります）。');
+  } else if (sub === 'status') {
+    console.log(m.status());
+  } else if (sub === 'restart') {
+    const r = m.restart();
+    if (r && !r.ok) throw new Error(r.out);
+    console.log('✓ 再起動しました（セッションは tmux 上で継続）。');
+  } else if (sub === 'logs') {
+    const cmd = m.logs();
+    if (!cmd) throw new Error('この OS ではログを取得できません');
+    require('child_process').spawnSync(cmd[0], cmd[1], { stdio: 'inherit' });
+  } else {
+    throw new Error(`unknown: service ${sub}`);
+  }
+}
+
 function ca(args) {
   const tls = require('../src/tls');
   const [sub, file] = args;
@@ -263,6 +298,9 @@ async function main() {
       break;
     case 'ca':
       ca(args);
+      break;
+    case 'service':
+      service(args);
       break;
     case 'help':
     case '--help':

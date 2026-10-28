@@ -85,6 +85,21 @@ npm start          # または: node bin/remota.js
 
 グローバルコマンドとして使う場合は `npm link` を実行すると `remota` コマンドが使えます。
 
+### バックグラウンドで常駐させる（推奨）
+
+ターミナルを開いたままにする必要はありません。一度登録すれば、ログイン時・再起動後に自動で起動し、落ちても自動で復帰します。
+
+```bash
+remota service install     # Linux: systemd ユーザーサービス / macOS: launchd / Windows: タスク スケジューラ
+remota service status      # 状態
+remota service logs        # ログ
+remota service restart     # 再起動（tmux 上のセッションはそのまま）
+remota service uninstall   # 解除
+remota url                 # スマホで開く URL と QR をいつでも表示
+```
+
+Linux でログアウト中や起動直後から動かすには `sudo loginctl enable-linger $USER` が必要です（install 時に自動で試み、できなければ案内します）。
+
 ### 複数の機器を登録する
 
 1. 管理したい各機器で Remota を起動します（`npm start`）。起動時に QR コードが表示されます（あとから `remota url` でも表示可）。
