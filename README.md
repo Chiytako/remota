@@ -63,6 +63,25 @@
 - スマホには最初に一度だけ証明書を登録（QR から開くページが手順を案内し、登録できたか自動で確認）
 - 証明書を全機器で共通にすれば、スマホへの登録は1回だけ（`remota ca export` / `remota ca import`）
 
+## Android アプリ
+
+スマホ側はネイティブの Android アプリ（`android/`）です。**証明書のインストールは不要**で、アプリを閉じていても通知が届きます。
+
+- **つなぎ方**: 機器で `remota` を起動すると表示される QR コード（`remota://pair?…`）をアプリで読み取るだけ。QR には機器のアドレス・トークン・**HTTPS の鍵の指紋**が入っていて、アプリはその鍵だけを信頼します（SSH のホスト鍵と同じ考え方）。別の鍵を出す相手には接続しません。
+- **複数のアドレス**: 自宅 LAN と VPN など、機器の全アドレスを覚えておき、つながる方を自動で使います。
+- **バックグラウンド通知**: [UnifiedPush](https://unifiedpush.org/) を使います。受信用に [ntfy](https://play.google.com/store/apps/details?id=io.heckel.ntfy) など UnifiedPush 対応アプリ（無料・オープンソース）を入れ、アプリの「設定 → プッシュ通知 → 有効化」。通知の中身は端末間で暗号化され、ntfy のサーバーにも読めません。
+- **生体認証ロック**: 指紋・顔認証・画面ロックで Remota を保護。
+
+### ビルド
+
+```bash
+npm install                    # アプリに同梱する UI の素材を用意
+cd android
+./gradlew assembleDebug        # → app/build/outputs/apk/debug/app-debug.apk
+```
+
+Android Studio で `android/` を開いてもビルドできます。GitHub に push すると、Actions がビルドした APK を成果物（remota-android-debug）として保存します。
+
 ## 必要なもの
 
 - Node.js 18 以上（ビルドツール: macOS は Xcode CLT、Linux は `build-essential` と `python3` — node-pty のビルドに使用）

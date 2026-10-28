@@ -64,13 +64,31 @@ function urls(config) {
   return hosts(config).map((h) => `${scheme}://${h}:${config.port}/#token=${token}`);
 }
 
+// Pairing link for the Android app: every address of this machine, the token, and the pin of the
+// HTTPS key (the app trusts exactly that key, like an SSH host key — no certificate to install).
+function pairLink(config) {
+  const tls = require('../src/tls');
+  tls.serverCredentials(config.tlsNames);
+  const q = new URLSearchParams({ n: os.hostname(), p: String(config.port), a: hosts(config).join(','), t: config.token, k: tls.serverKeyPin() });
+  return `remota://pair?${q}`;
+}
+
 function printUrls(config) {
+  if (builtinTls(config)) {
+    const link = pairLink(config);
+    console.log('\nAndroid アプリで QR コードを読み取ってください（アプリの「QRで追加」、またはカメラで読み取り）。');
+    require('qrcode-terminal').generate(link, { small: true }, (qr) => console.log(qr));
+    console.log(`ペアリングリンク: ${link}`);
+    console.log(`鍵の指紋 (SHA-256): ${require('../src/tls').serverKeyPin()}`);
+    console.log('\nブラウザから使う場合（PC など）:');
+    for (const u of urls(config)) console.log(`  ${u}`);
+    console.log('');
+    return;
+  }
   const list = urls(config);
-  console.log('\nスマホでこのURLを開くか、QRコードを読み取ってください。');
-  console.log('2台目以降は、アプリの「機器」タブ →「QRで追加」で読み取れます。');
+  console.log('\nブラウザでこのURLを開いてください:');
   for (const u of list) console.log(`  ${u}`);
   require('qrcode-terminal').generate(list[0], { small: true }, (qr) => console.log(qr));
-  if (builtinTls(config)) console.log('初回だけ、表示されるページの手順で証明書をスマホに登録します（通知・カメラ・Face ID に必要）。\n');
 }
 
 function parseFlags(args) {

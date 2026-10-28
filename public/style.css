@@ -66,6 +66,7 @@ small, .small { font-size: calc(12.5px * var(--ui-scale)); }
 .center { text-align: center; }
 .error { color: var(--bad); font-size: calc(13.5px * var(--ui-scale)); }
 [hidden] { display: none !important; }
+body:not(.native) .native-only, body.native .web-only { display: none !important; }
 
 .ico { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .ico .fill, .ico circle.fill { fill: currentColor; stroke: none; }

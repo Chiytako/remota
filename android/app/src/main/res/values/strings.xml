@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remota</string>
+    <string name="channel_agents">エージェントの通知</string>
+    <string name="channel_agents_desc">完了・承認待ちなど、コーディングエージェントからの通知</string>
+</resources>

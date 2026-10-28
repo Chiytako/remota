@@ -10,11 +10,11 @@
   <meta name="apple-mobile-web-app-title" content="Remota">
   <meta name="format-detection" content="telephone=no">
   <title>Remota</title>
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/icons/icon-180.png">
-  <link rel="stylesheet" href="/vendor/xterm.css">
-  <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -61,17 +61,19 @@
   <!-- First run -->
   <section id="view-login" class="view center-view" hidden>
     <div class="onboard">
-      <img src="/icons/icon.svg" alt="" class="onboard-logo">
+      <img src="icons/icon.svg" alt="" class="onboard-logo">
       <h1>Remota</h1>
       <p class="text-2">スマホから、手元のどのマシンの Claude Code / Codex も操作できます。まずはこの機器を登録しましょう。</p>
       <button class="btn primary wide" id="btn-login-qr"><svg class="ico"><use href="#i-qr"/></svg>QRコードを読み取る</button>
       <div class="or"><span>または</span></div>
-      <form id="login-form" class="stack">
+      <form id="login-form" class="stack web-only">
         <input id="login-token" type="password" autocomplete="current-password" placeholder="アクセストークン" required>
         <button type="submit" class="btn wide">トークンで登録</button>
       </form>
+      <button class="btn wide native-only" id="btn-login-url">ペアリングリンクを貼り付け</button>
       <p id="login-error" class="error" hidden></p>
-      <p class="text-3 small">トークンと QR コードは、この機器で <code>remota</code> を起動すると表示されます。</p>
+      <p class="text-3 small web-only">トークンと QR コードは、この機器で <code>remota</code> を起動すると表示されます。</p>
+      <p class="text-3 small native-only">機器で <code>remota</code> を起動すると QR コードが表示されます。証明書のインストールは不要です（機器の鍵を QR で受け取り、その鍵だけを信頼します）。</p>
     </div>
   </section>
 
@@ -263,8 +265,8 @@
   <dialog id="dlg-add-device" class="sheet">
     <form id="dev-form">
       <div class="sheet-head"><button type="button" class="link-btn" data-close>キャンセル</button><h2>機器を追加</h2><button type="submit" class="link-btn strong" id="dev-add">追加</button></div>
-      <p class="text-2 small">追加する機器で <code>remota</code> を起動し、表示された URL（<code>…/#token=…</code>）を貼り付けます。</p>
-      <div class="field"><span class="field-label">URL</span><input id="dev-url" placeholder="http://192.168.1.20:7681/#token=…" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+      <p class="text-2 small">追加する機器で <code>remota</code> を起動し、表示されたリンク（<code>remota://pair…</code>）を貼り付けます。</p>
+      <div class="field"><span class="field-label">URL</span><input id="dev-url" placeholder="remota://pair?… または https://…" required inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
       <div class="field"><span class="field-label">トークン（URLに含まれていれば不要）</span><input id="dev-token" type="password" autocomplete="off"></div>
       <div class="field"><span class="field-label">名前（任意）</span><input id="dev-name" placeholder="例: 自宅Mac、GPUサーバー" autocapitalize="off" autocorrect="off"></div>
       <p id="dev-error" class="error" hidden></p>
@@ -362,10 +364,10 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <script src="/vendor/xterm.js"></script>
-  <script src="/vendor/addon-fit.js"></script>
-  <script src="/vendor/addon-web-links.js"></script>
-  <script src="/vendor/jsqr.js" defer></script>
-  <script src="/app.js"></script>
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-web-links.js"></script>
+  <script src="vendor/jsqr.js" defer></script>
+  <script src="app.js"></script>
 </body>
 </html>

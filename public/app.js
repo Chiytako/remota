@@ -219,7 +219,16 @@ function normalizeDeviceUrl(raw) {
   try {
     url = new URL(String(raw || '').trim());
   } catch {
-    throw new Error('URLの形式が正しくありません（例: http://192.168.1.20:7681）');
+    throw new Error('URLの形式が正しくありません（機器で `remota url` を実行すると表示されます）');
+  }
+  // Pairing link from the machine's QR code: every address, the token and the key pin.
+  if (url.protocol === 'remota:') {
+    const q = url.searchParams;
+    const port = q.get('p') || '7681';
+    const host = (h) => (h.includes(':') ? `[${h}]` : h);
+    const alts = (q.get('a') || '').split(',').filter(Boolean).map((h) => `https://${host(h)}:${port}`);
+    if (!alts.length) throw new Error('ペアリングリンクにアドレスがありません');
+    return { url: alts[0], alts, token: q.get('t') || '', pin: q.get('k') || '', name: q.get('n') || '' };
   }
   if (!/^https?:$/.test(url.protocol)) throw new Error('http:// または https:// で始まるURLを指定してください');
   const params = new URLSearchParams(url.hash.slice(1));
@@ -243,9 +252,41 @@ class DeviceError extends Error {
 
 async function request(dev, path, opts = {}) {
   if (!dev) throw new DeviceError('機器が見つかりません', 404);
+  // A machine may answer on several addresses (home LAN, VPN…); try the others when one is unreachable
+  // and remember the one that worked.
+  const urls = [dev.url, ...(dev.alts || []).filter((u) => u !== dev.url)];
+  for (let i = 0; ; i++) {
+    try {
+      const data = await requestAt(dev, urls[i], path, opts);
+      if (i > 0 && devices.get(dev.id)) {
+        dev.url = urls[i];
+        devices.save();
+      }
+      return data;
+    } catch (ex) {
+      if (ex.status !== 0 || i === urls.length - 1 || /鍵が登録時と一致/.test(ex.message)) throw ex;
+    }
+  }
+}
+
+async function requestAt(dev, base, path, opts) {
+  if (NATIVE) {
+    const headers = { ...(opts.body && !(opts.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers || {}) };
+    const res = await nativeFetch(dev, base, `/api/${path}`, { method: opts.method || 'GET', headers, body: opts.body, timeout: opts.timeout || 20000 });
+    let data = {};
+    try {
+      data = JSON.parse(new TextDecoder().decode(res.bytes));
+    } catch {
+      // not JSON
+    }
+    if (res.status === 401) throw new DeviceError('トークンが違います', 401);
+    if (res.status === 429) throw new DeviceError('試行回数が多すぎます。しばらく待ってください', 429);
+    if (res.status >= 400) throw new DeviceError(data.error || `HTTP ${res.status}`, res.status);
+    return data;
+  }
   let res;
   try {
-    res = await fetch(`${dev.url}/api/${path}`, {
+    res = await fetch(`${base}/api/${path}`, {
       method: opts.method || 'GET',
       body: opts.body,
       headers: {
@@ -272,9 +313,163 @@ function devApi(id, path, opts) {
 // The service worker shows pushes from every machine and needs their names; it can't read
 // localStorage, so the names are handed over through the Cache API.
 function publishDeviceNames() {
-  if (!('caches' in window)) return;
   const names = Object.fromEntries(devices.list.map((d) => [d.id, d.name]));
+  if (NATIVE) return NATIVE.setDeviceNames(JSON.stringify(names));
+  if (!('caches' in window)) return;
   caches.open('remota-meta').then((c) => c.put('/__remota/devices.json', new Response(JSON.stringify(names)))).catch(() => {});
+}
+
+// ---------- running inside the Android app ----------
+
+// In the Android app the UI runs from bundled files and talks to machines through the native
+// side (window.RemotaNative), which pins each machine's key — no certificate to install. In a
+// browser NATIVE is null and the usual fetch/WebSocket paths are used.
+const NATIVE = window.RemotaNative || null;
+const nativeCalls = new Map();
+const nativeSockets = new Map();
+let nativeSeq = 0;
+
+function bytesFromB64(b64) {
+  const s = atob(b64 || '');
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
+async function bodyToB64(body) {
+  if (body == null) return null;
+  const bytes = body instanceof Blob ? new Uint8Array(await body.arrayBuffer()) : new TextEncoder().encode(String(body));
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+const nativeDevice = (dev, url = dev.url) => JSON.stringify({ url, token: dev.token, pin: dev.pin || '' });
+
+// One HTTP request through the pinned native client: resolves { status, type, bytes } or rejects.
+function nativeFetch(dev, url, path, { method = 'GET', headers = {}, body = null, timeout = 20000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const id = `r${++nativeSeq}`;
+    const timer = setTimeout(() => {
+      nativeCalls.delete(id);
+      reject(new DeviceError('応答がありません', 0));
+    }, timeout);
+    nativeCalls.set(id, (status, type, b64, error) => {
+      clearTimeout(timer);
+      if (error) reject(new DeviceError(error, 0));
+      else resolve({ status, type, bytes: bytesFromB64(b64) });
+    });
+    bodyToB64(body).then((b64) => NATIVE.request(id, nativeDevice(dev, url), method, path, JSON.stringify(headers), b64));
+  });
+}
+
+// WebSocket look-alike over the native client, so the terminal code doesn't care where it runs.
+class NativeSocket {
+  constructor(dev, pathAndQuery) {
+    this.id = `w${++nativeSeq}`;
+    this.readyState = 0;
+    nativeSockets.set(this.id, this);
+    NATIVE.wsOpen(this.id, nativeDevice(dev), pathAndQuery);
+  }
+  send(text) {
+    if (this.readyState === 1) NATIVE.wsSend(this.id, text);
+  }
+  close() {
+    if (this.readyState > 1) return;
+    this.readyState = 2;
+    NATIVE.wsClose(this.id);
+  }
+  event(type, data) {
+    if (type === 'open') {
+      this.readyState = 1;
+      if (this.onopen) this.onopen();
+    } else if (type === 'message') {
+      if (this.onmessage) this.onmessage({ data });
+    } else if (type === 'error') {
+      this.lastError = data;
+    } else if (type === 'close') {
+      this.readyState = 3;
+      nativeSockets.delete(this.id);
+      if (this.onclose) this.onclose({ code: Number(data) || 1006 });
+    }
+  }
+}
+
+function copyText(text) {
+  if (NATIVE) {
+    NATIVE.copyText(text);
+    return Promise.resolve();
+  }
+  return navigator.clipboard.writeText(text);
+}
+
+window.RemotaBridge = {
+  onResponse(id, status, type, b64, error) {
+    const cb = nativeCalls.get(id);
+    nativeCalls.delete(id);
+    if (cb) cb(status, type, b64, error);
+  },
+  onWs(id, type, data) {
+    const s = nativeSockets.get(id);
+    if (s) s.event(type, data);
+  },
+  onPush() {
+    registerPush(devices.list).catch(() => {});
+    if (state.tab === 'settings') updatePushState();
+  },
+  onAuth(id, ok) {
+    const cb = nativeCalls.get(id);
+    nativeCalls.delete(id);
+    if (cb) cb(ok);
+  },
+  onIntent(ev) {
+    handleNativeIntent(ev);
+  },
+  onResume() {
+    term.reconnectNow();
+    if (devices.list.length) refreshSessions();
+  },
+  // Android back button: close a sheet, leave the terminal, or go to the first tab; false lets the app close.
+  back() {
+    const open = [...document.querySelectorAll('dialog[open]')].pop();
+    if (open) {
+      open.close('cancel');
+      return true;
+    }
+    if (!$('#view-term').hidden) {
+      location.hash = '#/';
+      return true;
+    }
+    if (!$('#view-home').hidden && state.tab && state.tab !== 'sessions') {
+      switchTab('sessions');
+      return true;
+    }
+    return false;
+  },
+};
+
+async function handleNativeIntent(ev) {
+  if (!ev) return;
+  if (ev.type === 'open' && ev.device && ev.session && devices.get(ev.device)) {
+    openSession(ev.device, ev.session);
+  } else if (ev.type === 'pair') {
+    try {
+      const dev = await addDevice({ url: ev.link });
+      toast(`「${dev.name}」を追加しました`);
+      if (!$('#view-login').hidden) await boot();
+      else refreshSessions();
+    } catch (ex) {
+      toast(ex.message, { ms: 5000 });
+    }
+  }
+}
+
+function nativeAuthenticate() {
+  return new Promise((resolve) => {
+    const id = `a${++nativeSeq}`;
+    nativeCalls.set(id, (ok) => resolve(Boolean(ok)));
+    NATIVE.authenticate(id);
+  });
 }
 
 // ---------- state ----------
@@ -302,18 +497,26 @@ function showLogin() {
 async function addDevice({ name, url, token }) {
   const target = normalizeDeviceUrl(url);
   const dev = { id: randomId().slice(0, 8), name: '', url: target.url, token: String(token || target.token || '').trim() };
+  if (target.pin) dev.pin = target.pin;
+  if (target.alts) dev.alts = target.alts;
+  if (!name && target.name) name = target.name;
   if (!dev.token) throw new Error('アクセストークンを入力してください（`remota token` で表示されます）');
+  // The app trusts a machine only by the key in its pairing QR code.
+  if (NATIVE && !dev.pin) throw new Error('機器で `remota url` を実行し、表示された QR コード（remota://pair…）を読み取ってください。');
   const info = await request(dev, 'info', { timeout: 8000 }).catch((ex) => {
-    // Most first-time failures over HTTPS are a certificate the phone doesn't trust yet.
-    if (ex.status === 0 && dev.url.startsWith('https:')) {
+    // In a browser, most first-time failures over HTTPS are a certificate the phone doesn't trust yet.
+    if (!NATIVE && ex.status === 0 && dev.url.startsWith('https:')) {
       const u = new URL(dev.url);
       throw new Error(`接続できません。この機器の証明書がまだスマホに登録されていない可能性があります。http://${u.hostname}:${Number(u.port || 443) - 1}/setup を開いて証明書を登録してください（各機器で同じ証明書を使えば登録は1回: remota ca export / import）。`);
     }
     throw ex;
   });
-  const existing = devices.list.find((d) => d.url === dev.url);
+  const existing = devices.list.find((d) => d.url === dev.url || (dev.pin && d.pin === dev.pin));
   if (existing) {
     existing.token = dev.token;
+    if (dev.pin) existing.pin = dev.pin;
+    if (dev.alts) existing.alts = dev.alts;
+    existing.url = dev.url;
     if (name) existing.name = String(name).trim().slice(0, 40);
     devices.save();
     return existing;
@@ -757,6 +960,8 @@ $('#dev-form').addEventListener('submit', async (e) => {
     $('#dev-token').value = '';
     $('#dlg-add-device').close();
     toast(`「${dev.name}」を追加しました`);
+    // First machine added from the welcome screen: go on into the app.
+    if (!$('#view-login').hidden) return boot();
     await refreshSessions();
   } catch (ex) {
     err.textContent = ex.message;
@@ -772,6 +977,7 @@ async function onScannedDevice(text) {
   try {
     const dev = await addDevice({ url: text });
     toast(`「${dev.name}」を追加しました`);
+    if (!$('#view-login').hidden) return boot();
     await refreshSessions();
   } catch (ex) {
     // Let the user see and fix what was read (e.g. a URL without a token).
@@ -785,7 +991,7 @@ async function onScannedDevice(text) {
 $('#btn-dev-export').addEventListener('click', async () => {
   const text = JSON.stringify(devices.list.map(({ name, url, token }) => ({ name, url, token })));
   try {
-    await navigator.clipboard.writeText(text);
+    await copyText(text);
     toast('機器リストをコピーしました（トークンを含むので取り扱いに注意）', { ms: 3500 });
   } catch {
     prompt('この内容をコピーしてください（トークンを含みます）', text);
@@ -928,7 +1134,9 @@ const term = {
       params.set('since', this.seq);
     }
     // Browsers can't set headers on a WebSocket, so the token rides in the subprotocol list.
-    const ws = new WebSocket(`${dev.url.replace(/^http/, 'ws')}/ws?${params}`, ['remota', `auth.${dev.token}`]);
+    const ws = NATIVE
+      ? new NativeSocket(dev, `/ws?${params}`)
+      : new WebSocket(`${dev.url.replace(/^http/, 'ws')}/ws?${params}`, ['remota', `auth.${dev.token}`]);
     this.ws = ws;
     ws.onopen = () => {
       this.retry = 0;
@@ -1748,7 +1956,7 @@ async function openTextView() {
 
 $('#btn-copy-all').addEventListener('click', () => {
   const view = $('#text-view');
-  navigator.clipboard.writeText(view.textContent).then(
+  copyText(view.textContent).then(
     () => toast('コピーしました'),
     () => {
       // Clipboard API needs HTTPS; select everything so the native copy menu can be used.
@@ -1860,12 +2068,41 @@ $('#btn-logout').addEventListener('click', async () => {
 });
 
 function pushSupported() {
+  if (NATIVE) return true;
   return window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+const NTFY_URL = 'https://play.google.com/store/apps/details?id=io.heckel.ntfy';
+
+// Android: notifications reach the app through a UnifiedPush distributor app (e.g. ntfy) even
+// when Remota is closed; no Google account or server of ours is involved.
+function nativePush() {
+  try {
+    return JSON.parse(NATIVE.pushStatus());
+  } catch {
+    return {};
+  }
 }
 
 async function updatePushState() {
   const el = $('#push-state');
   const btn = $('#btn-push');
+  if (NATIVE) {
+    const st = nativePush();
+    const noDistributor = !st.distributors || !st.distributors.length;
+    btn.disabled = false;
+    if (st.endpoint) {
+      el.textContent = `有効：${devices.list.length}台の完了・承認待ちを、アプリを閉じていても通知します`;
+      btn.textContent = '無効化';
+    } else if (noDistributor || st.error === 'NO_DISTRIBUTOR') {
+      el.textContent = '受信用アプリが必要です（ntfy など UnifiedPush 対応アプリ。無料）';
+      btn.textContent = 'ntfy を入手';
+    } else {
+      el.textContent = st.error ? `登録できませんでした（${st.error}）` : '無効';
+      btn.textContent = '有効化';
+    }
+    return;
+  }
   if (!pushSupported()) {
     const ios = /iPhone|iPad/.test(navigator.userAgent);
     el.textContent = !window.isSecureContext
@@ -1911,6 +2148,10 @@ async function ensureVapid() {
 }
 
 async function currentSubscription() {
+  if (NATIVE) {
+    const st = nativePush();
+    return st.endpoint ? { endpoint: st.endpoint, toJSON: () => ({ endpoint: st.endpoint, keys: { p256dh: st.p256dh, auth: st.auth } }) } : null;
+  }
   if (!pushSupported()) return null;
   const reg = await navigator.serviceWorker.ready;
   return reg.pushManager.getSubscription();
@@ -1919,8 +2160,9 @@ async function currentSubscription() {
 // Tells each machine where and how to push; safe to repeat (machines replace by endpoint).
 async function registerPush(list) {
   const sub = await currentSubscription();
-  const vapid = prefs.get('vapid', null);
-  if (!sub || !vapid) return;
+  // In the app the distributor's endpoint accepts each machine's own VAPID signature, so no shared key.
+  const vapid = NATIVE ? undefined : prefs.get('vapid', null);
+  if (!sub || (!NATIVE && !vapid)) return;
   await Promise.all(list.map((dev) =>
     request(dev, 'push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON(), vapid, device: dev.id }) }).catch(() => {})
   ));
@@ -1935,6 +2177,21 @@ async function unregisterPush(list) {
 }
 
 $('#btn-push').addEventListener('click', async () => {
+  if (NATIVE) {
+    const st = nativePush();
+    if (st.endpoint) {
+      await unregisterPush(devices.list);
+      NATIVE.pushDisable();
+      toast('通知を無効にしました');
+    } else if (!st.distributors || !st.distributors.length) {
+      NATIVE.openExternal(NTFY_URL);
+    } else {
+      // The endpoint arrives through RemotaBridge.onPush, which registers it with every machine.
+      NATIVE.pushEnable();
+    }
+    setTimeout(updatePushState, 500);
+    return;
+  }
   try {
     const reg = await navigator.serviceWorker.ready;
     const existing = await reg.pushManager.getSubscription();
@@ -2058,6 +2315,8 @@ function scanQr(onResult) {
       status.textContent = 'カメラを使えませんでした。「写真から読み取る」を使ってください';
     });
 }
+
+$('#btn-login-url').addEventListener('click', () => openAddDevice());
 
 $('#btn-login-qr').addEventListener('click', () =>
   scanQr(async (text) => {
@@ -2251,9 +2510,12 @@ async function openFiles(rel = filePath) {
   if (/\.(png|jpe?g|gif|webp|svg)$/i.test(r.path)) {
     // Images need the token, so fetch them as blobs instead of pointing <img> at the URL.
     const dev = devices.get(term.node);
-    const res = await fetch(`${dev.url}/api/sessions/${term.sessionId}/raw?path=${encodeURIComponent(r.path)}`, { headers: { Authorization: `Bearer ${dev.token}` } });
+    const rawPath = `/api/sessions/${term.sessionId}/raw?path=${encodeURIComponent(r.path)}`;
+    const blob = NATIVE
+      ? await nativeFetch(dev, dev.url, rawPath).then((x) => new Blob([x.bytes], { type: x.type }))
+      : await fetch(`${dev.url}${rawPath}`, { headers: { Authorization: `Bearer ${dev.token}` } }).then((x) => x.blob());
     const img = document.createElement('img');
-    img.src = URL.createObjectURL(await res.blob());
+    img.src = URL.createObjectURL(blob);
     view.append(img);
   } else if (r.binary) {
     view.innerHTML = '<div class="note">バイナリファイルのため表示できません。</div>';
@@ -2330,12 +2592,14 @@ const LOCK_AFTER_MS = 60 * 1000;
 let hiddenAt = 0;
 
 function lockSupported() {
+  if (NATIVE) return NATIVE.canAuthenticate();
   return window.isSecureContext && window.PublicKeyCredential && navigator.credentials;
 }
 
 async function verifyUser() {
   const cred = prefs.get('lockCredential', null);
   if (!cred) return true;
+  if (NATIVE) return nativeAuthenticate();
   try {
     await navigator.credentials.get({
       publicKey: {
@@ -2380,7 +2644,14 @@ $('#set-lock').addEventListener('change', async (e) => {
   }
   if (!lockSupported()) {
     e.target.checked = false;
-    toast('HTTPS 接続のときに使えます');
+    toast(NATIVE ? 'この端末では生体認証・画面ロックが設定されていません' : 'HTTPS 接続のときに使えます');
+    return;
+  }
+  if (NATIVE) {
+    if (await nativeAuthenticate()) {
+      prefs.set('lockCredential', 'native');
+      toast('生体認証でのロックを有効にしました');
+    } else e.target.checked = false;
     return;
   }
   try {
@@ -2537,6 +2808,11 @@ function route() {
 }
 
 async function boot() {
+  if (NATIVE) {
+    document.body.classList.add('native');
+    const pending = NATIVE.takePending();
+    if (pending) setTimeout(() => handleNativeIntent(JSON.parse(pending)), 0);
+  }
   // A login link (`remota url` / QR code) carries the token in the fragment: register this machine.
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get('token')) {
@@ -2571,7 +2847,7 @@ document.addEventListener('visibilitychange', () => {
   if (devices.list.length) refreshSessions();
 });
 
-if ('serviceWorker' in navigator) {
+if (!NATIVE && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
     if (e.data && e.data.type === 'open' && e.data.sessionId && e.data.device) openSession(e.data.device, e.data.sessionId);

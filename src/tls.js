@@ -87,8 +87,25 @@ function hostNames(extra = []) {
   return [...names].sort();
 }
 
+// The server key is kept across reissues: the Android app pins it (like an SSH host key), so a new
+// address or a renewal must not change it.
+function serverKeyPair() {
+  if (fs.existsSync(SRV_KEY)) {
+    const privateKey = forge.pki.privateKeyFromPem(fs.readFileSync(SRV_KEY, 'utf8'));
+    return { privateKey, publicKey: forge.pki.setRsaPublicKey(privateKey.n, privateKey.e) };
+  }
+  return rsaKeyPair();
+}
+
+// SHA-256 of the server's public key (SubjectPublicKeyInfo), base64 — what the app pins.
+function serverKeyPin() {
+  const key = crypto.createPrivateKey(fs.readFileSync(SRV_KEY));
+  const spki = crypto.createPublicKey(key).export({ type: 'spki', format: 'der' });
+  return crypto.createHash('sha256').update(spki).digest('base64');
+}
+
 function issueServerCert(ca, names) {
-  const keys = rsaKeyPair();
+  const keys = serverKeyPair();
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = serial();
@@ -165,4 +182,4 @@ function importCa(text) {
   if (fs.existsSync(SRV_META)) fs.unlinkSync(SRV_META);
 }
 
-module.exports = { serverCredentials, caCertDer, caInfo, exportCa, importCa, hostNames, DIR, CA_CRT };
+module.exports = { serverCredentials, serverKeyPin, caCertDer, caInfo, exportCa, importCa, hostNames, DIR, CA_CRT };
