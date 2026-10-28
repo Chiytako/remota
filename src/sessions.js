@@ -53,6 +53,14 @@ class Session extends EventEmitter {
     this.createdAt = meta.createdAt || Date.now();
     this.useTmux = manager.useTmux;
     this.buffer = '';
+    // Total characters ever emitted. Clients resume from an offset instead of re-downloading everything.
+    this.seq = 0;
+    // Changes whenever the server process restarts, so stale offsets are never trusted.
+    this.epoch = crypto.randomBytes(4).toString('hex');
+    this.pending = '';
+    this.flushTimer = null;
+    // Last input number applied per client, so inputs re-sent after a reconnect run only once.
+    this.inputAcks = new Map();
     this.clients = new Set();
     this.status = 'running';
     this.lastOutputAt = Date.now();
@@ -94,6 +102,7 @@ class Session extends EventEmitter {
 
     this.pty.onData((data) => this.onOutput(data));
     this.pty.onExit(() => {
+      this.flush();
       this.exited = true;
       this.status = 'exited';
       this.broadcast({ type: 'exit' });
@@ -103,12 +112,34 @@ class Session extends EventEmitter {
 
   onOutput(data) {
     this.buffer += data;
+    this.seq += data.length;
     const max = this.manager.config.scrollbackBytes;
     if (this.buffer.length > max) this.buffer = this.buffer.slice(this.buffer.length - max);
     this.lastOutputAt = Date.now();
     this.outputSinceInput += data.length;
-    this.broadcast({ type: 'output', data });
+    // Agents repaint in many tiny writes; coalescing them cuts message count on slow links.
+    this.pending += data;
+    if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), 12);
     this.manager.scheduleCheck(this);
+  }
+
+  flush() {
+    clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    if (!this.pending) return;
+    const data = this.pending;
+    this.pending = '';
+    this.broadcast({ type: 'output', data, seq: this.seq });
+  }
+
+  // Applies one numbered input from a client; duplicates (re-sent after a reconnect) are dropped.
+  input(clientId, n, data) {
+    if (clientId && Number.isInteger(n)) {
+      if (n <= (this.inputAcks.get(clientId) || 0)) return;
+      this.inputAcks.set(clientId, n);
+      if (this.inputAcks.size > 50) this.inputAcks.delete(this.inputAcks.keys().next().value);
+    }
+    this.write(data);
   }
 
   write(data) {
@@ -163,9 +194,33 @@ class Session extends EventEmitter {
     this.manager.emit('change', this);
   }
 
-  attach(ws) {
+  attach(ws, { since, epoch, clientId } = {}) {
+    this.flush();
     this.clients.add(ws);
-    ws.send(JSON.stringify({ type: 'hello', session: this.toJSON(), replay: this.buffer }));
+    const start = this.seq - this.buffer.length;
+    const resume = epoch === this.epoch && Number.isInteger(since) && since >= start && since <= this.seq;
+    ws.send(JSON.stringify({
+      type: 'hello',
+      session: this.toJSON(),
+      epoch: this.epoch,
+      seq: this.seq,
+      resume,
+      replay: resume ? this.buffer.slice(since - start) : this.buffer,
+      inputAck: (clientId && this.inputAcks.get(clientId)) || 0,
+    }));
+    return resume;
+  }
+
+  // Full scrollback as plain text (tmux history when available), for native selection and copy.
+  text(lines = 3000) {
+    if (this.useTmux && !this.exited) {
+      try {
+        return tmux(['capture-pane', '-p', '-J', '-t', this.tmuxName, '-S', `-${Math.max(10, Math.min(50000, lines | 0))}`]);
+      } catch {
+        // fall through to the raw buffer
+      }
+    }
+    return null;
   }
 
   detach(ws) {

@@ -2,12 +2,13 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0b0f14">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Remota">
+  <meta name="format-detection" content="telephone=no">
   <title>Remota</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
@@ -16,6 +17,21 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+      <symbol id="i-clip" viewBox="0 0 24 24"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+      <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+      <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+    </defs>
+  </svg>
+
   <!-- Login -->
   <section id="view-login" class="view" hidden>
     <div class="login-box">
@@ -33,61 +49,77 @@
   <!-- Session list -->
   <section id="view-home" class="view" hidden>
     <header class="bar">
-      <div class="bar-title">
+      <div class="bar-title home-title">
         <strong>Remota</strong>
         <span id="host-label" class="muted small"></span>
       </div>
-      <button class="icon-btn" id="btn-settings" aria-label="設定">⚙︎</button>
+      <button class="icon-btn" id="btn-settings" aria-label="設定"><svg class="ico"><use href="#i-gear"/></svg></button>
     </header>
+    <div id="home-offline" class="conn-banner" hidden>サーバーに接続できません — 再試行中…</div>
     <main class="home-main">
       <ul id="session-list" class="session-list"></ul>
       <div id="empty-state" class="empty" hidden>
+        <img src="/icons/icon.svg" alt="" width="64" height="64">
         <p>セッションがありません</p>
-        <p class="muted small">「＋ 新規セッション」から Claude Code や Codex を起動できます。</p>
+        <p class="muted small">「新規セッション」から Claude Code や Codex を起動できます。<br>tmux 上で動くので、スマホを閉じても作業は続きます。</p>
       </div>
     </main>
-    <button class="fab" id="btn-new">＋ 新規セッション</button>
+    <button class="fab" id="btn-new"><svg class="ico"><use href="#i-plus"/></svg>新規セッション</button>
   </section>
 
   <!-- Terminal -->
   <section id="view-term" class="view" hidden>
     <header class="bar term-bar">
-      <button class="icon-btn" id="btn-back" aria-label="戻る">‹</button>
-      <div class="bar-title">
+      <button class="icon-btn back-btn" id="btn-back" aria-label="セッション一覧へ">
+        <svg class="ico"><use href="#i-back"/></svg>
+        <span id="back-badge" class="count-badge" hidden></span>
+      </button>
+      <button class="bar-title switcher" id="btn-switch" aria-label="セッションを切り替え">
         <span class="status-dot" id="term-status"></span>
         <strong id="term-name"></strong>
-        <span id="term-latency" class="muted small"></span>
-      </div>
-      <button class="icon-btn" id="btn-font-down" aria-label="文字を小さく">A−</button>
-      <button class="icon-btn" id="btn-font-up" aria-label="文字を大きく">A＋</button>
-      <button class="icon-btn" id="btn-term-menu" aria-label="メニュー">⋯</button>
+        <svg class="ico tiny"><use href="#i-down"/></svg>
+      </button>
+      <span id="term-latency" class="latency"></span>
+      <button class="icon-btn" id="btn-term-menu" aria-label="メニュー"><svg class="ico"><use href="#i-more"/></svg></button>
     </header>
-    <div id="conn-banner" class="conn-banner" hidden>再接続中…</div>
-    <div id="terminal-wrap"><div id="terminal"></div></div>
+    <div id="conn-banner" class="conn-banner" hidden></div>
+    <div id="terminal-wrap">
+      <div id="terminal"></div>
+      <div id="zoom-hud" class="zoom-hud" hidden></div>
+      <button id="btn-jump" class="jump-btn" hidden>最新へ ↓</button>
+    </div>
+    <div id="choice-bar" class="choice-bar" hidden>
+      <div class="choice-title" id="choice-title">承認待ち</div>
+      <div class="choice-list" id="choice-list"></div>
+    </div>
     <div id="keybar" class="keybar" role="toolbar" aria-label="特殊キー"></div>
     <div id="snippet-bar" class="snippet-bar" hidden></div>
     <form id="compose" class="compose">
-      <button type="button" class="icon-btn" id="btn-attach" aria-label="ファイルを添付">📎</button>
+      <button type="button" class="icon-btn" id="btn-kbd" aria-label="直接入力モード" aria-pressed="false"><svg class="ico"><use href="#i-kbd"/></svg></button>
+      <button type="button" class="icon-btn" id="btn-attach" aria-label="ファイルを添付"><svg class="ico"><use href="#i-clip"/></svg></button>
       <input type="file" id="file-input" hidden multiple>
-      <textarea id="compose-input" rows="1" placeholder="メッセージ / コマンド（Enterで送信）" autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="send"></textarea>
-      <button type="button" class="icon-btn" id="btn-mic" aria-label="音声入力">🎤</button>
-      <button type="submit" class="btn primary send-btn" aria-label="送信">↑</button>
+      <div class="compose-field">
+        <textarea id="compose-input" rows="1" placeholder="メッセージ / コマンド" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="send"></textarea>
+        <button type="button" class="icon-btn mic" id="btn-mic" aria-label="音声入力"><svg class="ico"><use href="#i-mic"/></svg></button>
+      </div>
+      <button type="submit" class="send-btn" id="btn-send" aria-label="送信（長押しでEnterなし送信）"><svg class="ico"><use href="#i-send"/></svg></button>
     </form>
   </section>
 
   <!-- Sheets -->
   <dialog id="dlg-new" class="sheet">
     <form method="dialog" id="new-form">
+      <div class="grabber"></div>
       <h2>新規セッション</h2>
       <label>起動するもの
         <div id="preset-list" class="chips"></div>
       </label>
       <label>コマンド
-        <input id="new-command" placeholder="空欄ならシェルのみ" autocapitalize="off" spellcheck="false">
+        <input id="new-command" placeholder="空欄ならシェルのみ" autocapitalize="off" autocorrect="off" spellcheck="false">
       </label>
       <label>作業ディレクトリ
-        <input id="new-cwd" list="cwd-history" autocapitalize="off" spellcheck="false">
-        <datalist id="cwd-history"></datalist>
+        <input id="new-cwd" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div id="cwd-chips" class="chips"></div>
       </label>
       <label>名前（任意）
         <input id="new-name" autocapitalize="off">
@@ -100,26 +132,68 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-switch" class="sheet">
+    <form method="dialog">
+      <div class="grabber"></div>
+      <h2>セッション</h2>
+      <ul id="switch-list" class="switch-list"></ul>
+      <div class="sheet-actions">
+        <button value="new" class="btn">＋ 新規</button>
+        <button value="cancel" class="btn primary">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="dlg-menu" class="sheet">
     <form method="dialog">
+      <div class="grabber"></div>
       <h2 id="menu-title">セッション</h2>
-      <div class="menu-list">
-        <button value="snippets" class="btn">定型文の表示 / 非表示</button>
+      <div class="menu-grid">
+        <button value="text" class="btn">テキスト選択</button>
+        <button value="history" class="btn">送信履歴</button>
+        <button value="snippets" class="btn">定型文バー切替</button>
         <button value="edit-snippets" class="btn">定型文を編集</button>
         <button value="edit-keys" class="btn">キーバーを編集</button>
+        <button value="font-up" class="btn">文字を大きく</button>
+        <button value="font-down" class="btn">文字を小さく</button>
         <button value="rename" class="btn">名前を変更</button>
-        <button value="copy" class="btn">画面のテキストをコピー</button>
         <button value="kill" class="btn danger">セッションを終了</button>
-        <button value="cancel" class="btn">閉じる</button>
       </div>
+      <p class="muted small">ヒント: ターミナルを2本指でピンチすると文字サイズを変更できます。</p>
+      <div class="sheet-actions">
+        <button value="cancel" class="btn primary">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-list" class="sheet">
+    <form method="dialog">
+      <div class="grabber"></div>
+      <h2 id="list-title"></h2>
+      <ul id="list-items" class="pick-list"></ul>
+      <div class="sheet-actions">
+        <button value="cancel" class="btn primary">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-text" class="sheet full">
+    <form method="dialog">
+      <div class="text-head">
+        <h2>テキスト</h2>
+        <button type="button" class="btn" id="btn-copy-all">すべてコピー</button>
+        <button value="cancel" class="btn primary">閉じる</button>
+      </div>
+      <pre id="text-view" class="text-view"></pre>
     </form>
   </dialog>
 
   <dialog id="dlg-edit" class="sheet">
     <form method="dialog">
+      <div class="grabber"></div>
       <h2 id="edit-title"></h2>
       <p id="edit-help" class="muted small"></p>
-      <textarea id="edit-text" rows="10" spellcheck="false" autocapitalize="off"></textarea>
+      <textarea id="edit-text" rows="10" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
       <div class="sheet-actions">
         <button value="reset" class="btn" formnovalidate>初期値に戻す</button>
         <button value="cancel" class="btn" formnovalidate>キャンセル</button>
@@ -130,6 +204,7 @@
 
   <dialog id="dlg-settings" class="sheet">
     <form method="dialog">
+      <div class="grabber"></div>
       <h2>設定</h2>
       <div class="setting">
         <div>
@@ -143,6 +218,15 @@
         <button type="button" class="btn" id="btn-push-test">送信</button>
       </div>
       <label class="setting">
+        <div><strong>テーマ</strong></div>
+        <select id="set-theme">
+          <option value="midnight">Midnight</option>
+          <option value="dracula">Dracula</option>
+          <option value="solarized">Solarized Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </label>
+      <label class="setting">
         <div><strong>音声入力の言語</strong></div>
         <select id="set-lang">
           <option value="ja-JP">日本語</option>
@@ -152,15 +236,23 @@
         </select>
       </label>
       <label class="setting">
-        <div><strong>Enterで送信</strong><p class="muted small">オフにすると改行、送信は↑ボタン</p></div>
+        <div><strong>Enterで送信</strong><p class="muted small">オフにすると改行。送信は↑ボタン</p></div>
         <input type="checkbox" id="set-enter-send">
       </label>
       <label class="setting">
-        <div><strong>送信後に自動でEnter</strong><p class="muted small">定型文・入力欄からの送信時</p></div>
+        <div><strong>送信時に自動でEnter</strong><p class="muted small">↑ボタンを長押しするとEnterなしで送信</p></div>
         <input type="checkbox" id="set-auto-enter">
       </label>
+      <label class="setting">
+        <div><strong>承認ボタンを表示</strong><p class="muted small">画面の選択肢を読み取ってボタン化します</p></div>
+        <input type="checkbox" id="set-choices">
+      </label>
+      <label class="setting">
+        <div><strong>触覚フィードバック</strong><p class="muted small">対応端末のみ</p></div>
+        <input type="checkbox" id="set-haptics">
+      </label>
       <div class="setting">
-        <div><strong>エージェント連携</strong><p class="muted small">サーバーで <code>remota hooks</code> を実行すると Claude Code の完了/承認待ちを確実に通知できます。</p></div>
+        <div><strong>エージェント連携</strong><p class="muted small">サーバーで <code>remota hooks</code> を実行すると Claude Code の完了 / 承認待ちを確実に通知できます。</p></div>
       </div>
       <div class="sheet-actions">
         <button type="button" class="btn danger" id="btn-logout">ログアウト</button>

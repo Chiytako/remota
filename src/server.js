@@ -189,6 +189,10 @@ function createServer(config) {
         const { direction, lines } = await readJsonBody(req);
         return send(res, 200, { ok: session.scroll(direction, lines) });
       }
+      if (req.method === 'GET' && action === '/text') {
+        const text = session.text(Number(url.searchParams.get('lines')) || 3000);
+        return send(res, 200, { text });
+      }
       if (req.method === 'POST' && action === '/input') {
         // Lets scripts and shortcuts type into a session without a WebSocket.
         const { data } = await readJsonBody(req);
@@ -284,7 +288,12 @@ function createServer(config) {
     ? https.createServer({ cert: fs.readFileSync(config.tls.cert), key: fs.readFileSync(config.tls.key) }, handler)
     : http.createServer(handler);
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
+  // Terminal output is highly compressible text; deflate makes a big difference on mobile data.
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: 4 * 1024 * 1024,
+    perMessageDeflate: { threshold: 512, zlibDeflateOptions: { level: 6 } },
+  });
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');
@@ -312,8 +321,13 @@ function createServer(config) {
     const cols = Number(url.searchParams.get('cols'));
     const rows = Number(url.searchParams.get('rows'));
     if (cols && rows) session.resize(cols, rows);
-    session.attach(ws);
-    setTimeout(() => session.redraw(), 50);
+    const clientId = (url.searchParams.get('client') || '').slice(0, 64);
+    const since = url.searchParams.has('since') ? Number(url.searchParams.get('since')) : undefined;
+    const resumed = session.attach(ws, { since, epoch: url.searchParams.get('epoch'), clientId });
+    if (!resumed) setTimeout(() => session.redraw(), 50);
+
+    let ackTimer = null;
+    let lastAck = 0;
 
     ws.isAlive = true;
     ws.on('pong', () => (ws.isAlive = true));
@@ -324,7 +338,16 @@ function createServer(config) {
       } catch {
         return;
       }
-      if (msg.type === 'input' && typeof msg.data === 'string') session.write(msg.data);
+      if (msg.type === 'input' && typeof msg.data === 'string') {
+        session.input(clientId, msg.n, msg.data);
+        if (Number.isInteger(msg.n)) {
+          lastAck = Math.max(lastAck, msg.n);
+          ackTimer = ackTimer || setTimeout(() => {
+            ackTimer = null;
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ack', n: lastAck }));
+          }, 20);
+        }
+      }
       else if (msg.type === 'resize') session.resize(msg.cols, msg.rows);
       else if (msg.type === 'ping') ws.send(JSON.stringify({ type: 'pong', t: msg.t }));
     });

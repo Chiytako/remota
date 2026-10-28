@@ -16,6 +16,7 @@ Ctrl=@ctrl
 ←=\\e[D
 →=\\e[C
 ⏎=\\r
+⌫=\\x7f
 1=1
 2=2
 3=3
@@ -40,6 +41,9 @@ git diff --stat
 テストを実行して、失敗したら直してください
 変更内容を要約して`;
 
+// Keys that repeat while held, like a hardware keyboard.
+const REPEATABLE = new Set(['\\e[A', '\\e[B', '\\e[C', '\\e[D', '\\x7f', '@pgup', '@pgdn']);
+
 const prefs = {
   get(key, fallback) {
     try {
@@ -55,6 +59,32 @@ const prefs = {
     } catch {
       // storage unavailable (private mode); settings just won't persist
     }
+  },
+  remove(key) {
+    try {
+      localStorage.removeItem(`remota.${key}`);
+    } catch {
+      // ignore
+    }
+  },
+};
+
+const THEMES = {
+  midnight: { background: '#05080c', foreground: '#e6edf3', cursor: '#5aa9ff', cursorAccent: '#05080c', selectionBackground: '#264f78' },
+  dracula: {
+    background: '#1e1f29', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#44475a',
+    black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c', blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2',
+    brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94', brightYellow: '#ffffa5', brightBlue: '#d6acff', brightMagenta: '#ff92df', brightCyan: '#a4ffff', brightWhite: '#ffffff',
+  },
+  solarized: {
+    background: '#002b36', foreground: '#93a1a1', cursor: '#93a1a1', selectionBackground: '#073642',
+    black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900', blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+    brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#859900', brightYellow: '#b58900', brightBlue: '#839496', brightMagenta: '#6c71c4', brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
+  },
+  light: {
+    background: '#ffffff', foreground: '#1f2328', cursor: '#1f6feb', selectionBackground: '#b6d4fe',
+    black: '#24292f', red: '#cf222e', green: '#116329', yellow: '#7d4e00', blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
+    brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#1a7f37', brightYellow: '#633c01', brightBlue: '#218bff', brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f',
   },
 };
 
@@ -81,6 +111,12 @@ function parseKeys(text) {
     });
 }
 
+function randomId() {
+  const a = new Uint8Array(8);
+  crypto.getRandomValues(a);
+  return [...a].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ---------- small helpers ----------
 
 async function api(path, opts = {}) {
@@ -99,16 +135,25 @@ async function api(path, opts = {}) {
 }
 
 let toastTimer;
-function toast(msg, ms = 2200) {
+function toast(msg, { ms = 2200, onClick = null } = {}) {
   const el = $('#toast');
   el.textContent = msg;
   el.hidden = false;
+  el.classList.toggle('clickable', Boolean(onClick));
+  el.onclick = () => {
+    el.hidden = true;
+    if (onClick) onClick();
+  };
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.hidden = true), ms);
 }
 
+function haptic(ms = 8) {
+  if (prefs.get('haptics', true) && navigator.vibrate) navigator.vibrate(ms);
+}
+
 function timeAgo(t) {
-  const s = Math.round((Date.now() - t) / 1000);
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
   if (s < 60) return `${s}秒前`;
   if (s < 3600) return `${Math.round(s / 60)}分前`;
   if (s < 86400) return `${Math.round(s / 3600)}時間前`;
@@ -116,6 +161,7 @@ function timeAgo(t) {
 }
 
 const STATUS_LABEL = { running: '実行中', idle: '待機', waiting: '承認待ち', exited: '終了' };
+const STATUS_ORDER = { waiting: 0, running: 1, idle: 2, exited: 3 };
 
 function showView(name) {
   for (const v of document.querySelectorAll('.view')) v.hidden = v.id !== `view-${name}`;
@@ -136,11 +182,20 @@ function trackViewport() {
   update();
 }
 
+function applyTheme() {
+  const name = prefs.get('theme', 'midnight');
+  document.documentElement.dataset.theme = name;
+  const theme = THEMES[name] || THEMES.midnight;
+  document.querySelector('meta[name="theme-color"]').content = name === 'light' ? '#ffffff' : '#0b0f14';
+  if (term.instance) term.instance.options.theme = theme;
+}
+
 // ---------- state ----------
 
 const state = {
   info: null,
   sessions: [],
+  statuses: new Map(),
   pollTimer: null,
   presetIndex: 0,
 };
@@ -169,13 +224,17 @@ $('#login-form').addEventListener('submit', async (e) => {
 
 // ---------- home ----------
 
+function sortedSessions() {
+  return [...state.sessions].sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || b.lastOutputAt - a.lastOutputAt);
+}
+
 function renderSessions() {
   const list = $('#session-list');
   list.replaceChildren();
   $('#empty-state').hidden = state.sessions.length > 0;
-  for (const s of state.sessions) {
+  for (const s of sortedSessions()) {
     const li = document.createElement('li');
-    li.className = 'session-card';
+    li.className = `session-card ${s.status}`;
     li.innerHTML = `
       <span class="status-dot ${s.status}"></span>
       <span class="name"></span>
@@ -185,31 +244,54 @@ function renderSessions() {
     li.querySelector('.name').textContent = s.name;
     li.querySelector('.meta').textContent = `${s.command || 'shell'} · ${s.cwd} · ${timeAgo(s.lastOutputAt)}`;
     if (s.preview) li.querySelector('.preview').textContent = s.preview;
-    li.addEventListener('click', () => (location.hash = `#/s/${s.id}`));
+    li.addEventListener('click', () => openSession(s.id));
     list.append(li);
   }
+}
+
+function openSession(id) {
+  haptic();
+  location.hash = `#/s/${id}`;
 }
 
 async function refreshSessions() {
   try {
     state.sessions = await api('/api/sessions');
-    renderSessions();
-    updateBadge();
-  } catch {
-    // shown via login redirect or next poll
+    $('#home-offline').hidden = true;
+  } catch (ex) {
+    if (ex.message !== 'unauthorized') $('#home-offline').hidden = false;
+    return;
+  }
+  notifyTransitions();
+  if (!$('#view-home').hidden) renderSessions();
+  updateBadges();
+}
+
+// In-app heads-up when another session starts waiting for approval.
+function notifyTransitions() {
+  for (const s of state.sessions) {
+    const prev = state.statuses.get(s.id);
+    if (prev && prev !== 'waiting' && s.status === 'waiting' && s.id !== term.sessionId) {
+      haptic(30);
+      toast(`⏳ ${s.name} が承認待ちです（タップで開く）`, { ms: 6000, onClick: () => openSession(s.id) });
+    }
+    state.statuses.set(s.id, s.status);
   }
 }
 
-function updateBadge() {
-  const waiting = state.sessions.filter((s) => s.status === 'waiting').length;
-  if ('setAppBadge' in navigator) (waiting ? navigator.setAppBadge(waiting) : navigator.clearAppBadge()).catch(() => {});
-  document.title = waiting ? `(${waiting}) Remota` : 'Remota';
+function updateBadges() {
+  const waiting = state.sessions.filter((s) => s.status === 'waiting');
+  if ('setAppBadge' in navigator) (waiting.length ? navigator.setAppBadge(waiting.length) : navigator.clearAppBadge()).catch(() => {});
+  document.title = waiting.length ? `(${waiting.length}) Remota` : 'Remota';
+  const others = waiting.filter((s) => s.id !== term.sessionId).length;
+  $('#back-badge').hidden = !others;
+  $('#back-badge').textContent = others;
 }
 
-function startPolling() {
+function startPolling(interval) {
   stopPolling();
   refreshSessions();
-  state.pollTimer = setInterval(() => !document.hidden && refreshSessions(), 3000);
+  state.pollTimer = setInterval(() => !document.hidden && refreshSessions(), interval);
 }
 
 function stopPolling() {
@@ -240,7 +322,16 @@ function openNewDialog() {
 
   const history = prefs.get('cwdHistory', []);
   $('#new-cwd').value = history[0] || (state.info && state.info.defaultCwd) || '';
-  $('#cwd-history').replaceChildren(...history.map((d) => Object.assign(document.createElement('option'), { value: d })));
+  const cwdChips = $('#cwd-chips');
+  cwdChips.replaceChildren();
+  for (const dir of history.slice(0, 6)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.textContent = dir;
+    b.addEventListener('click', () => ($('#new-cwd').value = dir));
+    cwdChips.append(b);
+  }
   $('#new-name').value = '';
   $('#new-error').hidden = true;
   $('#dlg-new').showModal();
@@ -258,14 +349,18 @@ $('#new-form').addEventListener('submit', async (e) => {
     prefs.set('lastPreset', state.presetIndex);
     prefs.set('cwdHistory', [cwd, ...prefs.get('cwdHistory', []).filter((d) => d !== cwd)].slice(0, 10));
     $('#dlg-new').close();
-    location.hash = `#/s/${s.id}`;
+    state.sessions.push(s);
+    openSession(s.id);
   } catch (ex) {
     $('#new-error').textContent = ex.message;
     $('#new-error').hidden = false;
   }
 });
 
-// ---------- terminal ----------
+// ---------- terminal & connection ----------
+
+// Identifies this browser tab to the server so inputs re-sent after a reconnect are applied once.
+const CLIENT_ID = randomId();
 
 const term = {
   instance: null,
@@ -275,8 +370,17 @@ const term = {
   retry: 0,
   retryTimer: null,
   pingTimer: null,
+  lastPong: 0,
+  // Resume point within the session's output stream.
+  epoch: null,
+  seq: null,
+  // Numbered inputs not yet confirmed by the server; replayed after a reconnect.
+  inputN: 0,
+  pending: [],
   ctrl: false,
   scrolledBack: false,
+  replaying: false,
+  direct: prefs.get('directInput', false),
   fontSize: prefs.get('fontSize', 13),
 
   ensure() {
@@ -288,12 +392,14 @@ const term = {
       scrollback: 10000,
       allowProposedApi: true,
       macOptionIsMeta: true,
-      theme: { background: '#000000', foreground: '#e6edf3', cursor: '#58a6ff', selectionBackground: '#264f78' },
+      theme: THEMES[prefs.get('theme', 'midnight')] || THEMES.midnight,
     });
     this.fit = new FitAddon.FitAddon();
     t.loadAddon(this.fit);
     t.loadAddon(new WebLinksAddon.WebLinksAddon());
     t.open($('#terminal'));
+    t.textarea.setAttribute('autocorrect', 'off');
+    t.textarea.setAttribute('autocapitalize', 'off');
     t.onData((data) => {
       // Replayed output can contain terminal queries; their answers must not reach the shell again.
       if (this.replaying) return;
@@ -305,9 +411,12 @@ const term = {
       this.send(data);
     });
     t.onResize(({ cols, rows }) => this.sendJson({ type: 'resize', cols, rows }));
+    t.onScroll(() => updateJumpButton());
+    t.onWriteParsed(() => scheduleChoiceScan());
     this.instance = t;
+    this.setDirect(this.direct, false);
     new ResizeObserver(() => this.fitSoon()).observe($('#terminal-wrap'));
-    setupTouchScroll();
+    setupTouch();
   },
 
   fitSoon() {
@@ -327,9 +436,14 @@ const term = {
     this.close();
     this.sessionId = id;
     this.retry = 0;
+    this.epoch = null;
+    this.seq = null;
+    this.pending = [];
     this.instance.reset();
+    hideChoices();
     const s = state.sessions.find((x) => x.id === id);
     $('#term-name').textContent = s ? s.name : '';
+    restoreDraft();
     this.connect();
   },
 
@@ -339,64 +453,131 @@ const term = {
     this.fitSoon();
     const { cols, rows } = this.instance;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws?session=${this.sessionId}&cols=${cols}&rows=${rows}`);
+    const params = new URLSearchParams({ session: this.sessionId, cols, rows, client: CLIENT_ID });
+    if (this.epoch && this.seq !== null) {
+      params.set('epoch', this.epoch);
+      params.set('since', this.seq);
+    }
+    const ws = new WebSocket(`${proto}://${location.host}/ws?${params}`);
     this.ws = ws;
     ws.onopen = () => {
       this.retry = 0;
-      $('#conn-banner').hidden = true;
+      this.lastPong = Date.now();
       clearInterval(this.pingTimer);
-      this.pingTimer = setInterval(() => this.sendJson({ type: 'ping', t: performance.now() }), 5000);
-      this.sendJson({ type: 'ping', t: performance.now() });
+      this.pingTimer = setInterval(() => this.heartbeat(), 3000);
+      this.ping();
     };
     ws.onmessage = (ev) => this.onMessage(JSON.parse(ev.data));
     ws.onclose = (ev) => {
-      clearInterval(this.pingTimer);
       if (this.ws !== ws) return;
+      clearInterval(this.pingTimer);
       if (ev.code === 4404) {
         toast('セッションは終了しています');
         location.hash = '#/';
         return;
       }
-      setStatus('offline');
-      $('#conn-banner').hidden = false;
-      const delay = Math.min(5000, 300 * 2 ** this.retry++);
-      this.retryTimer = setTimeout(() => this.connect(), delay);
+      this.scheduleReconnect();
     };
   },
 
-  // Network switched or app came back to the foreground: don't wait for the backoff timer.
+  scheduleReconnect() {
+    setStatus('offline');
+    this.updateBanner();
+    const delay = Math.min(4000, 250 * 2 ** this.retry++);
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => this.connect(), delay);
+  },
+
+  // A socket can look open long after the network under it died (common on iOS after a network switch).
+  // Missing pongs mean it's dead: drop it and reconnect instead of waiting for TCP to notice.
+  heartbeat() {
+    if (document.hidden) return;
+    if (Date.now() - this.lastPong > 7000) return this.forceReconnect();
+    this.ping();
+  },
+
+  ping() {
+    this.sendJson({ type: 'ping', t: performance.now() });
+  },
+
+  forceReconnect() {
+    const ws = this.ws;
+    this.ws = null;
+    clearInterval(this.pingTimer);
+    if (ws) {
+      ws.onclose = null;
+      ws.onmessage = null;
+      try {
+        ws.close();
+      } catch {
+        // already closed
+      }
+    }
+    this.retry = 0;
+    this.scheduleReconnect();
+  },
+
+  // Network switched or app came back to the foreground.
   reconnectNow() {
     if (!this.sessionId) return;
     if (!this.ws || this.ws.readyState > 1) {
       this.retry = 0;
       this.connect();
-    } else {
-      this.sendJson({ type: 'ping', t: performance.now() });
+      return;
+    }
+    // The socket claims to be open; verify quickly rather than trusting it.
+    const before = this.lastPong;
+    this.ping();
+    setTimeout(() => {
+      if (this.sessionId && this.lastPong === before) this.forceReconnect();
+    }, 2500);
+  },
+
+  updateBanner() {
+    const banner = $('#conn-banner');
+    const offline = !this.ws || this.ws.readyState !== 1;
+    banner.hidden = !offline;
+    if (offline) {
+      const queued = this.pending.length;
+      banner.textContent = `再接続中…${queued ? `（未送信の入力 ${queued} 件は接続後に送信されます）` : ''}`;
     }
   },
 
   onMessage(msg) {
     const t = this.instance;
     if (msg.type === 'hello') {
-      t.reset();
+      if (!msg.resume) t.reset();
       if (msg.replay) {
         this.replaying = true;
         t.write(msg.replay, () => (this.replaying = false));
       }
+      this.epoch = msg.epoch;
+      this.seq = msg.seq;
       $('#term-name').textContent = msg.session.name;
       $('#menu-title').textContent = msg.session.name;
       this.tmux = msg.session.tmux;
       setStatus(msg.session.status);
       this.sendJson({ type: 'resize', cols: t.cols, rows: t.rows });
+      // Re-send whatever the server never received.
+      this.pending = this.pending.filter((p) => p.n > msg.inputAck);
+      for (const p of this.pending) this.sendJson({ type: 'input', n: p.n, data: p.data });
+      this.updateBanner();
     } else if (msg.type === 'output') {
       t.write(msg.data);
+      if (typeof msg.seq === 'number') this.seq = msg.seq;
+    } else if (msg.type === 'ack') {
+      this.pending = this.pending.filter((p) => p.n > msg.n);
     } else if (msg.type === 'status') {
       setStatus(msg.status);
     } else if (msg.type === 'exit') {
       setStatus('exited');
       t.write('\r\n\x1b[90m[セッションが終了しました]\x1b[0m\r\n');
     } else if (msg.type === 'pong') {
-      $('#term-latency').textContent = `${Math.round(performance.now() - msg.t)}ms`;
+      this.lastPong = Date.now();
+      const ms = Math.round(performance.now() - msg.t);
+      const el = $('#term-latency');
+      el.textContent = `${ms}ms`;
+      el.className = `latency${ms > 1000 ? ' bad' : ms > 300 ? ' slow' : ''}`;
     }
   },
 
@@ -405,14 +586,24 @@ const term = {
   },
 
   send(data) {
+    if (!this.sessionId) return;
     if (this.scrolledBack) exitScrollback();
-    this.sendJson({ type: 'input', data });
+    if (this.instance.buffer.active.viewportY < this.instance.buffer.active.baseY) this.instance.scrollToBottom();
+    const n = ++this.inputN;
+    this.pending.push({ n, data });
+    if (this.pending.length > 2000) this.pending.shift();
+    this.sendJson({ type: 'input', n, data });
+    if (!this.ws || this.ws.readyState !== 1) this.updateBanner();
+    hideChoices();
   },
 
   // Bracketed paste lets agents receive multi-line text as one message instead of many Enters.
   sendText(text, enter) {
     if (!text) return;
-    this.instance.paste(text);
+    const t = this.instance;
+    const bracketed = t.modes.bracketedPasteMode;
+    const body = text.replace(/\r?\n/g, '\r');
+    this.send(bracketed ? `\x1b[200~${body}\x1b[201~` : body);
     if (enter) setTimeout(() => this.send('\r'), 40);
   },
 
@@ -421,12 +612,23 @@ const term = {
     document.querySelectorAll('.key[data-seq="@ctrl"]').forEach((k) => k.classList.toggle('on', on));
   },
 
-  setFont(delta) {
-    this.fontSize = Math.max(8, Math.min(28, this.fontSize + delta));
+  setDirect(on, focus = true) {
+    this.direct = on;
+    prefs.set('directInput', on);
+    $('#btn-kbd').setAttribute('aria-pressed', String(on));
+    if (!this.instance) return;
+    // inputmode=none: tapping the terminal (to scroll, select, pick a choice) won't pop the keyboard.
+    this.instance.textarea.setAttribute('inputmode', on ? 'text' : 'none');
+    if (on && focus) this.instance.focus();
+    if (!on) this.instance.blur();
+  },
+
+  setFont(size, fit = true) {
+    this.fontSize = Math.max(7, Math.min(32, Math.round(size)));
     prefs.set('fontSize', this.fontSize);
     if (this.instance) {
       this.instance.options.fontSize = this.fontSize;
-      this.fitSoon();
+      if (fit) this.fitSoon();
     }
   },
 
@@ -436,13 +638,138 @@ const term = {
     const ws = this.ws;
     this.ws = null;
     this.sessionId = null;
-    if (ws) ws.close();
+    if (ws) {
+      ws.onclose = null;
+      ws.close();
+    }
     $('#conn-banner').hidden = true;
+    hideChoices();
   },
 };
 
 function setStatus(status) {
   $('#term-status').className = `status-dot ${status}`;
+  if (status === 'waiting') scheduleChoiceScan();
+}
+
+// ---------- approval choices read from the screen ----------
+
+const OPTION_RE = /^[\s│┃|]*(?:([❯›>▶→●])\s*)?(\d{1,2})[.)]\s+(.+?)[\s│┃|]*$/;
+const YN_RE = /[[(]\s*([yY])\s*\/\s*([nN])\s*[\])]\s*:?\s*$/;
+let choiceTimer = null;
+
+function scheduleChoiceScan() {
+  clearTimeout(choiceTimer);
+  choiceTimer = setTimeout(scanChoices, 120);
+}
+
+function screenLines() {
+  const buf = term.instance.buffer.active;
+  const lines = [];
+  for (let i = buf.baseY; i < buf.baseY + term.instance.rows; i++) {
+    const line = buf.getLine(i);
+    lines.push(line ? line.translateToString(true) : '');
+  }
+  return lines;
+}
+
+// Finds a numbered menu (Claude Code / Codex approval prompts) or a [y/n] prompt near the bottom of the screen.
+function findChoices(lines) {
+  let last = lines.length - 1;
+  while (last > 0 && !lines[last].trim()) last--;
+  const tail = lines[last] || '';
+  const yn = tail.match(YN_RE);
+  if (yn) {
+    return {
+      title: tail.trim().slice(0, 120),
+      options: [
+        { key: yn[1], label: 'Yes', kind: 'yes' },
+        { key: yn[2], label: 'No', kind: 'no' },
+      ],
+    };
+  }
+
+  const found = [];
+  let gap = 0;
+  for (let i = last; i >= Math.max(0, last - 18); i--) {
+    const m = lines[i].match(OPTION_RE);
+    if (m) {
+      const num = Number(m[2]);
+      if (found.length && num !== found[0].num - 1) break;
+      found.unshift({ num, label: m[3].trim(), selected: Boolean(m[1]), row: i });
+      gap = 0;
+      if (num === 1) break;
+    } else if (found.length && ++gap > 2) {
+      break;
+    } else if (!found.length && lines.slice(i, last + 1).filter((l) => l.trim()).length > 3) {
+      // The menu must sit near the bottom of the screen.
+      return null;
+    }
+  }
+  if (found.length < 2 || found[0].num !== 1) return null;
+
+  let title = '';
+  for (let i = found[0].row - 1; i >= Math.max(0, found[0].row - 8); i--) {
+    const text = lines[i].replace(/[│┃|╭╮╰╯─━]+/g, ' ').trim();
+    if (text) {
+      title = text;
+      if (/[?？]/.test(text)) break;
+    }
+  }
+  if (!/[?？]/.test(title) && $('#term-status').className.indexOf('waiting') < 0) return null;
+  return {
+    title: title.slice(0, 120),
+    options: found.map((o) => ({
+      key: String(o.num),
+      label: o.label.replace(/\s{2,}/g, ' '),
+      selected: o.selected,
+      kind: /^(yes|はい|allow|approve|proceed)/i.test(o.label) ? 'yes' : /^(no|いいえ|deny|reject|cancel)/i.test(o.label) ? 'no' : '',
+    })),
+  };
+}
+
+function scanChoices() {
+  if (!term.instance || !term.sessionId || !prefs.get('choices', true)) return hideChoices();
+  const found = findChoices(screenLines());
+  if (!found) return hideChoices();
+  const sig = JSON.stringify(found);
+  const bar = $('#choice-bar');
+  if (!bar.hidden && bar.dataset.sig === sig) return;
+  bar.dataset.sig = sig;
+  $('#choice-title').textContent = found.title || '選択してください';
+  const list = $('#choice-list');
+  list.replaceChildren();
+  for (const opt of found.options) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `choice ${opt.kind || ''}${opt.selected ? ' selected' : ''}`;
+    b.innerHTML = '<span class="num"></span><span class="label"></span>';
+    b.querySelector('.num').textContent = opt.key;
+    b.querySelector('.label').textContent = opt.label;
+    b.addEventListener('pointerdown', (e) => e.preventDefault());
+    b.addEventListener('click', () => {
+      haptic(15);
+      term.send(opt.key);
+    });
+    list.append(b);
+  }
+  const esc = document.createElement('button');
+  esc.type = 'button';
+  esc.className = 'choice no';
+  esc.innerHTML = '<span class="num">Esc</span><span class="label">キャンセル</span>';
+  esc.addEventListener('pointerdown', (e) => e.preventDefault());
+  esc.addEventListener('click', () => term.send('\x1b'));
+  list.append(esc);
+  if (bar.hidden) haptic(20);
+  bar.hidden = false;
+}
+
+function hideChoices() {
+  const bar = $('#choice-bar');
+  if (!bar.hidden) {
+    bar.hidden = true;
+    bar.dataset.sig = '';
+  }
 }
 
 // ---------- key bar & snippets ----------
@@ -458,14 +785,45 @@ function renderKeybar() {
     if (label === 'n' || label === '^C') b.classList.add('reject');
     b.textContent = label;
     b.dataset.seq = seq;
-    // pointerdown + preventDefault keeps the soft keyboard open while tapping keys.
+    // preventDefault on pointerdown keeps the soft keyboard (and compose focus) in place.
     b.addEventListener('pointerdown', (e) => e.preventDefault());
-    b.addEventListener('click', () => pressKey(seq));
+    if (REPEATABLE.has(seq)) attachRepeat(b, () => pressKey(seq));
+    else b.addEventListener('click', () => pressKey(seq));
     bar.append(b);
   }
 }
 
+// Hold to auto-repeat; a horizontal swipe over the bar scrolls instead of pressing.
+function attachRepeat(el, fire) {
+  let holdTimer = null;
+  let repeatTimer = null;
+  let repeated = false;
+  let startX = 0;
+  const stop = () => {
+    clearTimeout(holdTimer);
+    clearInterval(repeatTimer);
+    holdTimer = repeatTimer = null;
+    el.classList.remove('pressed');
+  };
+  el.addEventListener('pointerdown', (e) => {
+    repeated = false;
+    startX = e.clientX;
+    el.classList.add('pressed');
+    holdTimer = setTimeout(() => {
+      repeated = true;
+      fire();
+      repeatTimer = setInterval(fire, 70);
+    }, 380);
+  });
+  el.addEventListener('pointermove', (e) => Math.abs(e.clientX - startX) > 10 && stop());
+  el.addEventListener('pointerup', stop);
+  el.addEventListener('pointercancel', stop);
+  el.addEventListener('pointerleave', stop);
+  el.addEventListener('click', () => !repeated && fire());
+}
+
 function pressKey(seq) {
+  haptic();
   if (seq === '@ctrl') return term.setCtrl(!term.ctrl);
   if (seq === '@pgup' || seq === '@pgdn') return pageScroll(seq === '@pgup' ? 'up' : 'down');
   let data = unescapeSeq(seq);
@@ -478,18 +836,29 @@ function renderSnippets() {
   const bar = $('#snippet-bar');
   bar.replaceChildren();
   bar.hidden = !prefs.get('showSnippets', true);
+  const historyBtn = document.createElement('button');
+  historyBtn.type = 'button';
+  historyBtn.className = 'key snippet';
+  historyBtn.innerHTML = '<svg class="ico tiny" style="opacity:1"><use href="#i-history"/></svg>';
+  historyBtn.setAttribute('aria-label', '送信履歴');
+  historyBtn.addEventListener('pointerdown', (e) => e.preventDefault());
+  historyBtn.addEventListener('click', openHistory);
+  bar.append(historyBtn);
   for (const text of prefs.get('snippets', DEFAULT_SNIPPETS).split('\n').filter((l) => l.trim())) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'key snippet';
     b.textContent = text;
     b.addEventListener('pointerdown', (e) => e.preventDefault());
-    b.addEventListener('click', () => term.sendText(text, prefs.get('autoEnter', true)));
+    b.addEventListener('click', () => {
+      haptic();
+      term.sendText(text, prefs.get('autoEnter', true));
+    });
     bar.append(b);
   }
 }
 
-// ---------- scrolling (tmux history via copy-mode, otherwise xterm's own buffer) ----------
+// ---------- touch: scroll with momentum, pinch to zoom ----------
 
 let scrollQueue = 0;
 let scrollFlush = null;
@@ -507,11 +876,12 @@ function queueScroll(lines) {
     scrollFlush = null;
     if (!n) return;
     term.scrolledBack = true;
+    updateJumpButton();
     await api(`/api/sessions/${term.sessionId}/scroll`, {
       method: 'POST',
       body: JSON.stringify({ direction: n < 0 ? 'up' : 'down', lines: Math.abs(n) }),
     }).catch(() => {});
-  }, 60);
+  }, 50);
 }
 
 function pageScroll(direction) {
@@ -522,32 +892,99 @@ function pageScroll(direction) {
 
 function exitScrollback() {
   term.scrolledBack = false;
+  updateJumpButton();
   api(`/api/sessions/${term.sessionId}/scroll`, { method: 'POST', body: JSON.stringify({ direction: 'exit' }) }).catch(() => {});
 }
 
-function setupTouchScroll() {
+function updateJumpButton() {
+  if (!term.instance) return;
+  const buf = term.instance.buffer.active;
+  $('#btn-jump').hidden = !(term.scrolledBack || buf.viewportY < buf.baseY);
+}
+
+$('#btn-jump').addEventListener('click', () => {
+  if (term.scrolledBack) exitScrollback();
+  term.instance.scrollToBottom();
+  updateJumpButton();
+});
+
+function setupTouch() {
   const el = $('#terminal-wrap');
+  const hud = $('#zoom-hud');
   let lastY = null;
+  let lastT = 0;
   let acc = 0;
+  let velocity = 0;
+  let momentum = null;
+  let pinch = null;
+  let hudTimer = null;
+
+  const lineHeight = () => term.fontSize * 1.2;
+  const scrollBy = (px) => {
+    acc += px;
+    const lines = Math.trunc(acc / lineHeight());
+    if (lines) {
+      acc -= lines * lineHeight();
+      queueScroll(lines);
+    }
+  };
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+
   el.addEventListener('touchstart', (e) => {
-    if (e.touches.length === 1) {
+    cancelAnimationFrame(momentum);
+    if (e.touches.length === 2) {
+      pinch = { d: dist(e.touches), size: term.fontSize };
+      lastY = null;
+    } else if (e.touches.length === 1) {
       lastY = e.touches[0].clientY;
+      lastT = performance.now();
       acc = 0;
+      velocity = 0;
     }
   }, { passive: true });
+
   el.addEventListener('touchmove', (e) => {
+    if (pinch && e.touches.length === 2) {
+      const size = pinch.size * (dist(e.touches) / pinch.d);
+      if (Math.round(size) !== term.fontSize) {
+        term.setFont(size, false);
+        hud.textContent = `文字サイズ ${term.fontSize}`;
+        hud.hidden = false;
+      }
+      return;
+    }
     if (lastY === null || e.touches.length !== 1) return;
     const y = e.touches[0].clientY;
-    acc += lastY - y;
+    const now = performance.now();
+    const dy = lastY - y;
+    velocity = 0.7 * (dy / Math.max(1, now - lastT)) + 0.3 * velocity;
     lastY = y;
-    const lineH = term.fontSize * 1.2;
-    const lines = Math.trunc(acc / lineH);
-    if (lines) {
-      acc -= lines * lineH;
-      if (term.tmux) queueScroll(lines);
-    }
+    lastT = now;
+    scrollBy(dy);
   }, { passive: true });
-  el.addEventListener('touchend', () => (lastY = null), { passive: true });
+
+  el.addEventListener('touchend', (e) => {
+    if (pinch && e.touches.length < 2) {
+      pinch = null;
+      term.fitSoon();
+      clearTimeout(hudTimer);
+      hudTimer = setTimeout(() => (hud.hidden = true), 700);
+      return;
+    }
+    if (lastY === null) return;
+    lastY = null;
+    // Flick: keep scrolling and slow down, like native lists.
+    if (Math.abs(velocity) < 0.3 || performance.now() - lastT > 80) return;
+    let v = velocity * 16;
+    const step = () => {
+      v *= 0.94;
+      if (Math.abs(v) < 0.6) return;
+      scrollBy(v);
+      momentum = requestAnimationFrame(step);
+    };
+    momentum = requestAnimationFrame(step);
+  }, { passive: true });
+
   // Desktop browsers: mouse wheel scrolls tmux history too.
   el.addEventListener('wheel', (e) => {
     if (!term.tmux) return;
@@ -564,28 +1001,86 @@ function autosize() {
   input.style.height = 'auto';
   input.style.height = `${Math.min(input.scrollHeight, window.innerHeight * 0.3)}px`;
 }
-input.addEventListener('input', autosize);
+
+let draftTimer = null;
+input.addEventListener('input', () => {
+  autosize();
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraft, 300);
+});
+
+// Unsent text survives app restarts and session switches.
+function saveDraft() {
+  if (!term.sessionId) return;
+  if (input.value) prefs.set(`draft.${term.sessionId}`, input.value);
+  else prefs.remove(`draft.${term.sessionId}`);
+}
+
+function restoreDraft() {
+  input.value = prefs.get(`draft.${term.sessionId}`, '');
+  autosize();
+}
 
 input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && prefs.get('enterSends', true)) {
+  // keyCode 229 = IME composition on Safari, where isComposing is not always set.
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229 && prefs.get('enterSends', true)) {
     e.preventDefault();
-    $('#compose').requestSubmit();
+    submitCompose(prefs.get('autoEnter', true));
   }
 });
 
-$('#compose').addEventListener('submit', (e) => {
-  e.preventDefault();
+function submitCompose(enter) {
   const text = input.value;
   if (!text) {
-    // Empty send acts as plain Enter, handy for confirming prompts.
+    // Empty send acts as a plain Enter, handy for confirming prompts.
     term.send('\r');
     return;
   }
-  term.sendText(text, prefs.get('autoEnter', true));
+  term.sendText(text, enter);
   const history = prefs.get('history', []);
-  prefs.set('history', [text, ...history.filter((h) => h !== text)].slice(0, 50));
+  prefs.set('history', [text, ...history.filter((h) => h !== text)].slice(0, 100));
   input.value = '';
+  saveDraft();
   autosize();
+}
+
+$('#compose').addEventListener('submit', (e) => e.preventDefault());
+
+// Tap = send (+Enter per settings); long-press = send without Enter.
+(() => {
+  const btn = $('#btn-send');
+  let timer = null;
+  let longPressed = false;
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    longPressed = false;
+    btn.classList.add('held');
+    timer = setTimeout(() => {
+      longPressed = true;
+      haptic(25);
+      submitCompose(false);
+      toast('Enterなしで送信しました', { ms: 1200 });
+    }, 500);
+  });
+  const end = () => {
+    clearTimeout(timer);
+    btn.classList.remove('held');
+  };
+  btn.addEventListener('pointerup', end);
+  btn.addEventListener('pointercancel', end);
+  btn.addEventListener('pointerleave', end);
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (longPressed) return;
+    haptic();
+    submitCompose(prefs.get('autoEnter', true));
+  });
+})();
+
+$('#btn-kbd').addEventListener('pointerdown', (e) => e.preventDefault());
+$('#btn-kbd').addEventListener('click', () => {
+  term.setDirect(!term.direct);
+  toast(term.direct ? '直接入力モード: ターミナルをタップして入力' : '入力欄モード', { ms: 1500 });
 });
 
 let recognition = null;
@@ -593,7 +1088,7 @@ $('#btn-mic').addEventListener('click', () => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
     input.focus();
-    toast('このブラウザは音声認識APIに非対応です。キーボードのマイクボタンで音声入力できます。', 3500);
+    toast('キーボードのマイクボタンで音声入力できます', { ms: 3000 });
     return;
   }
   if (recognition) {
@@ -610,14 +1105,28 @@ $('#btn-mic').addEventListener('click', () => {
     for (const r of ev.results) text += r[0].transcript;
     input.value = base + text;
     autosize();
+    saveDraft();
   };
-  recognition.onerror = (ev) => toast(`音声認識エラー: ${ev.error}`);
+  recognition.onerror = (ev) => {
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+      input.focus();
+      toast('音声認識が使えません。キーボードのマイクボタンを使ってください', { ms: 3500 });
+    } else if (ev.error !== 'aborted' && ev.error !== 'no-speech') {
+      toast(`音声認識エラー: ${ev.error}`);
+    }
+  };
   recognition.onend = () => {
     recognition = null;
     $('#btn-mic').classList.remove('listening');
   };
-  recognition.start();
-  $('#btn-mic').classList.add('listening');
+  try {
+    recognition.start();
+    haptic(15);
+    $('#btn-mic').classList.add('listening');
+  } catch {
+    recognition = null;
+    input.focus();
+  }
 });
 
 $('#btn-attach').addEventListener('click', () => $('#file-input').click());
@@ -636,7 +1145,7 @@ input.addEventListener('paste', async (e) => {
 
 async function uploadFile(file) {
   if (!term.sessionId) return;
-  toast(`アップロード中: ${file.name}`);
+  toast(`アップロード中: ${file.name}`, { ms: 10000 });
   try {
     const res = await api(`/api/upload?session=${term.sessionId}`, {
       method: 'POST',
@@ -645,6 +1154,7 @@ async function uploadFile(file) {
     });
     input.value = `${input.value}${input.value && !input.value.endsWith(' ') ? ' ' : ''}${res.relative} `;
     autosize();
+    saveDraft();
     input.focus();
     toast('添付しました（パスを入力欄に挿入）');
   } catch (ex) {
@@ -652,55 +1162,128 @@ async function uploadFile(file) {
   }
 }
 
-// ---------- terminal menu ----------
+// ---------- terminal header, switcher & menu ----------
 
 $('#btn-back').addEventListener('click', () => (location.hash = '#/'));
-$('#btn-font-up').addEventListener('click', () => term.setFont(1));
-$('#btn-font-down').addEventListener('click', () => term.setFont(-1));
+
+$('#btn-switch').addEventListener('click', async () => {
+  await refreshSessions();
+  const list = $('#switch-list');
+  list.replaceChildren();
+  for (const s of sortedSessions()) {
+    const li = document.createElement('li');
+    if (s.id === term.sessionId) li.className = 'current';
+    li.innerHTML = `<span class="status-dot ${s.status}"></span><span class="name"></span><span class="badge ${s.status}">${STATUS_LABEL[s.status] || s.status}</span>`;
+    li.querySelector('.name').textContent = s.name;
+    li.addEventListener('click', () => {
+      $('#dlg-switch').close();
+      openSession(s.id);
+    });
+    list.append(li);
+  }
+  $('#dlg-switch').showModal();
+});
+
+$('#dlg-switch').addEventListener('close', () => {
+  if ($('#dlg-switch').returnValue === 'new') openNewDialog();
+  $('#dlg-switch').returnValue = '';
+});
+
 $('#btn-term-menu').addEventListener('click', () => $('#dlg-menu').showModal());
 
 $('#dlg-menu').addEventListener('close', async () => {
   const action = $('#dlg-menu').returnValue;
   $('#dlg-menu').returnValue = '';
   const id = term.sessionId;
-  if (action === 'snippets') {
+  if (action === 'text') {
+    openTextView();
+  } else if (action === 'history') {
+    openHistory();
+  } else if (action === 'snippets') {
     prefs.set('showSnippets', !prefs.get('showSnippets', true));
     renderSnippets();
     term.fitSoon();
   } else if (action === 'edit-snippets') {
-    editText('定型文', '1行に1つ。タップで入力欄を経由せず送信します。', 'snippets', DEFAULT_SNIPPETS, renderSnippets);
+    editText('定型文', '1行に1つ。タップで送信します。', 'snippets', DEFAULT_SNIPPETS, renderSnippets);
   } else if (action === 'edit-keys') {
-    editText('キーバー', '「ラベル=送信内容」を1行に1つ。\\e=Esc, \\r=Enter, \\t=Tab, \\xNN=制御文字。@ctrl / @pgup / @pgdn は特殊動作。', 'keys', DEFAULT_KEYS, renderKeybar);
+    editText('キーバー', '「ラベル=送信内容」を1行に1つ。\\e=Esc, \\r=Enter, \\t=Tab, \\x7f=Backspace, \\xNN=制御文字。@ctrl / @pgup / @pgdn は特殊動作。', 'keys', DEFAULT_KEYS, renderKeybar);
+  } else if (action === 'font-up' || action === 'font-down') {
+    term.setFont(term.fontSize + (action === 'font-up' ? 1 : -1));
+    toast(`文字サイズ ${term.fontSize}`, { ms: 1000 });
   } else if (action === 'rename') {
     const name = prompt('新しい名前', $('#term-name').textContent);
     if (name) {
       await api(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
       $('#term-name').textContent = name;
     }
-  } else if (action === 'copy') {
-    copyScreen();
   } else if (action === 'kill') {
     if (confirm('このセッションを終了しますか？実行中のプロセスも終了します。')) {
       await api(`/api/sessions/${id}`, { method: 'DELETE' });
+      prefs.remove(`draft.${id}`);
       location.hash = '#/';
     }
   }
 });
 
-function copyScreen() {
-  const buf = term.instance.buffer.active;
-  const lines = [];
-  for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i).translateToString(true));
-  const text = lines.join('\n').replace(/\n+$/, '');
-  navigator.clipboard.writeText(text).then(
+// Native text view: selecting text inside a canvas terminal on a phone is painful, so show it as plain text.
+async function openTextView() {
+  let text = null;
+  try {
+    ({ text } = await api(`/api/sessions/${term.sessionId}/text?lines=3000`));
+  } catch {
+    // use the local buffer
+  }
+  if (!text) {
+    const buf = term.instance.buffer.active;
+    const lines = [];
+    for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i).translateToString(true));
+    text = lines.join('\n');
+  }
+  const view = $('#text-view');
+  view.textContent = text.replace(/\s+$/, '');
+  $('#dlg-text').showModal();
+  view.scrollTop = view.scrollHeight;
+}
+
+$('#btn-copy-all').addEventListener('click', () => {
+  const view = $('#text-view');
+  navigator.clipboard.writeText(view.textContent).then(
     () => toast('コピーしました'),
     () => {
-      // Clipboard API needs HTTPS; fall back to letting the user select the text.
-      input.value = text.slice(-4000);
-      autosize();
-      toast('入力欄に貼り付けました。選択してコピーしてください。');
+      // Clipboard API needs HTTPS; select everything so the native copy menu can be used.
+      const range = document.createRange();
+      range.selectNodeContents(view);
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      toast('全選択しました。メニューからコピーしてください');
     }
   );
+});
+
+function openHistory() {
+  const items = prefs.get('history', []);
+  $('#list-title').textContent = '送信履歴';
+  const list = $('#list-items');
+  list.replaceChildren();
+  if (!items.length) {
+    const li = document.createElement('li');
+    li.textContent = 'まだ履歴はありません';
+    list.append(li);
+  }
+  for (const text of items) {
+    const li = document.createElement('li');
+    li.textContent = text;
+    li.addEventListener('click', () => {
+      $('#dlg-list').close();
+      input.value = text;
+      autosize();
+      saveDraft();
+      input.focus();
+    });
+    list.append(li);
+  }
+  $('#dlg-list').showModal();
 }
 
 function editText(title, help, key, fallback, after) {
@@ -718,19 +1301,39 @@ function editText(title, help, key, fallback, after) {
   dlg.showModal();
 }
 
+// Tapping the dimmed backdrop closes any sheet.
+for (const dlg of document.querySelectorAll('dialog.sheet')) {
+  dlg.addEventListener('click', (e) => {
+    if (e.target === dlg) {
+      const r = dlg.getBoundingClientRect();
+      const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      if (!inside) dlg.close('cancel');
+    }
+  });
+}
+
 // ---------- settings & push ----------
 
 function openSettings() {
+  $('#set-theme').value = prefs.get('theme', 'midnight');
   $('#set-lang').value = prefs.get('lang', 'ja-JP');
   $('#set-enter-send').checked = prefs.get('enterSends', true);
   $('#set-auto-enter').checked = prefs.get('autoEnter', true);
+  $('#set-choices').checked = prefs.get('choices', true);
+  $('#set-haptics').checked = prefs.get('haptics', true);
   updatePushState();
   $('#dlg-settings').showModal();
 }
 
+$('#set-theme').addEventListener('change', (e) => {
+  prefs.set('theme', e.target.value);
+  applyTheme();
+});
 $('#set-lang').addEventListener('change', (e) => prefs.set('lang', e.target.value));
 $('#set-enter-send').addEventListener('change', (e) => prefs.set('enterSends', e.target.checked));
 $('#set-auto-enter').addEventListener('change', (e) => prefs.set('autoEnter', e.target.checked));
+$('#set-choices').addEventListener('change', (e) => prefs.set('choices', e.target.checked));
+$('#set-haptics').addEventListener('change', (e) => prefs.set('haptics', e.target.checked));
 $('#btn-logout').addEventListener('click', async () => {
   await api('/api/logout', { method: 'POST' }).catch(() => {});
   $('#dlg-settings').close();
@@ -797,23 +1400,32 @@ $('#btn-push-test').addEventListener('click', async () => {
 // ---------- routing & boot ----------
 
 function route() {
+  for (const dlg of document.querySelectorAll('dialog[open]')) dlg.close();
   const m = location.hash.match(/^#\/s\/([0-9a-f]+)/);
   if (m) {
-    stopPolling();
     showView('term');
     term.open(m[1]);
     term.fitSoon();
+    // Slower poll in the terminal: only for the back-button badge and heads-up toasts.
+    startPolling(5000);
   } else {
+    saveDraft();
     term.close();
     showView('home');
-    startPolling();
+    startPolling(3000);
   }
 }
 
 async function boot() {
   try {
     state.info = await api('/api/info');
-  } catch {
+  } catch (ex) {
+    if (ex.message !== 'unauthorized') {
+      // Server unreachable: keep trying rather than showing a dead screen.
+      showView('home');
+      $('#home-offline').hidden = false;
+      setTimeout(boot, 3000);
+    }
     return;
   }
   $('#host-label').textContent = `${state.info.user}@${state.info.hostname}`;
@@ -822,19 +1434,24 @@ async function boot() {
 
 window.addEventListener('hashchange', route);
 window.addEventListener('online', () => term.reconnectNow());
+window.addEventListener('pagehide', saveDraft);
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
+  if (document.hidden) {
+    saveDraft();
+    return;
+  }
   term.reconnectNow();
-  if (!term.sessionId && state.info) refreshSessions();
+  if (state.info) refreshSessions();
 });
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data && e.data.type === 'open' && e.data.sessionId) location.hash = `#/s/${e.data.sessionId}`;
+    if (e.data && e.data.type === 'open' && e.data.sessionId) openSession(e.data.sessionId);
   });
 }
 
+applyTheme();
 renderKeybar();
 renderSnippets();
 trackViewport();

@@ -33,3 +33,8 @@ test('prompt that scrolled far away is ignored', () => {
 test('lastLines keeps the final meaningful lines', () => {
   assert.strictEqual(lastLines('a1\n\n│ b2 │\n╰────╯\nc3\n', 2), 'b2\nc3');
 });
+
+test('answered prompt followed by more output is no longer waiting', () => {
+  const out = 'Do you want to proceed?\n❯ 1. Yes\n  2. No\n2\nPICKED=2\n$ echo hi\nhi\n$ ls\na b c\n$ ';
+  assert.strictEqual(classify(out), null);
+});

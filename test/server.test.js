@@ -111,3 +111,54 @@ test('upload stores the file inside the session directory', async () => {
   assert.match(out.relative, /^\.remota-uploads\/.+スクショ\.png$/);
   await fetch(`${base}/api/sessions/${s.id}`, { method: 'DELETE', headers: auth() });
 });
+
+test('reconnect resumes from the last offset and duplicate inputs run once', async () => {
+  const s = await (await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth(), body: JSON.stringify({ cwd: home }) })).json();
+  const wsUrl = (q) => `${base.replace('http', 'ws')}/ws?session=${s.id}&client=c1${q}`;
+  const open = (q) =>
+    new Promise((resolve) => {
+      const ws = new WebSocket(wsUrl(q), { headers: { Authorization: `Bearer ${config.token}` } });
+      const state = { ws, out: '', hello: null, seq: 0 };
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'hello') {
+          state.hello = msg;
+          state.out += msg.replay;
+          state.seq = msg.seq;
+          resolve(state);
+        }
+        if (msg.type === 'output') {
+          state.out += msg.data;
+          state.seq = msg.seq;
+        }
+      });
+    });
+  const waitFor = async (st, re) => {
+    for (let i = 0; i < 80 && !re.test(st.out); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.match(st.out, re);
+  };
+
+  const a = await open('');
+  a.ws.send(JSON.stringify({ type: 'input', n: 1, data: 'echo ONE_$((0+1))\r' }));
+  await waitFor(a, /ONE_1/);
+  await new Promise((r) => setTimeout(r, 300));
+  const { seq } = a;
+  const epoch = a.hello.epoch;
+  a.ws.close();
+
+  const b = await open(`&epoch=${epoch}&since=${seq}`);
+  assert.strictEqual(b.hello.resume, true);
+  assert.ok(!b.hello.replay.includes('ONE_1'), 'resumed replay must not repeat old output');
+  assert.strictEqual(b.hello.inputAck, 1);
+  // Input 1 is re-sent (as after a flaky reconnect) together with a new input 2.
+  b.ws.send(JSON.stringify({ type: 'input', n: 1, data: 'echo ONE_$((0+1))\r' }));
+  b.ws.send(JSON.stringify({ type: 'input', n: 2, data: 'echo TWO_$((1+1))\r' }));
+  await waitFor(b, /TWO_2/);
+  assert.ok(!b.out.includes('ONE_1'), 'duplicate input must not run again');
+  b.ws.close();
+
+  const c = await open('&epoch=stale&since=5');
+  assert.strictEqual(c.hello.resume, false, 'a stale epoch gets a full replay');
+  c.ws.close();
+  await fetch(`${base}/api/sessions/${s.id}`, { method: 'DELETE', headers: auth() });
+});

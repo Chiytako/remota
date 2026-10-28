@@ -25,9 +25,11 @@ const WORKING_PATTERNS = [/esc to interrupt/i, /ctrl\+c to interrupt/i];
 
 function classify(recentOutput) {
   const text = stripAnsi(recentOutput).slice(-4000);
-  // Only the tail matters: an old prompt that has scrolled away should not count.
-  const tail = text.split('\n').slice(-25).join('\n');
-  if (WORKING_PATTERNS.some((re) => re.test(tail.slice(-600)))) return 'working';
+  // Only the last few visible lines matter: a prompt that was already answered and pushed up
+  // by newer output must not count.
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  const tail = lines.slice(-8).join('\n');
+  if (WORKING_PATTERNS.some((re) => re.test(lines.slice(-4).join('\n')))) return 'working';
   if (WAITING_PATTERNS.some((re) => re.test(tail))) return 'waiting';
   return null;
 }
