@@ -350,7 +350,13 @@
         <button type="button" class="icon-btn small" id="btn-text-prev" aria-label="前へ">↑</button>
         <button type="button" class="icon-btn small" id="btn-text-next" aria-label="次へ">↓</button>
       </div>
-      <pre id="text-view" class="text-view"></pre>
+      <p class="text-3 small text-hint">行をタップして選択（もう一度別の行をタップで範囲）。単語は長押しでも選べます。</p>
+      <div id="text-view" class="text-view"></div>
+      <div id="text-sel-bar" class="text-sel-bar" hidden>
+        <span id="text-sel-info"></span>
+        <button type="button" class="link-btn" id="btn-text-sel-clear">解除</button>
+        <button type="button" class="btn primary small" id="btn-text-sel-copy">コピー</button>
+      </div>
     </form>
   </dialog>
 

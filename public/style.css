@@ -496,6 +496,11 @@ dialog textarea#edit-text { font-family: var(--mono); font-size: 14px; margin-bo
   background: var(--term-bg); font: calc(13px * var(--ui-scale))/1.55 var(--mono); white-space: pre-wrap; word-break: break-all;
   user-select: text; -webkit-user-select: text;
 }
+.text-view .tl { min-height: 1.55em; padding: 0 4px; margin: 0 -4px; border-radius: 4px; }
+.text-view .tl.sel { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.text-hint { margin: 0 0 8px; }
+.text-sel-bar { display: flex; align-items: center; gap: 12px; padding: 10px 2px 0; }
+.text-sel-bar span { flex: 1; font-size: calc(13px * var(--ui-scale)); color: var(--text-2); }
 .text-view mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inherit; border-radius: 3px; }
 .text-view mark.cur { background: var(--warn); color: #000; }
 

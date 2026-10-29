@@ -448,7 +448,18 @@ function copyText(text) {
     NATIVE.copyText(text);
     return Promise.resolve();
   }
-  return navigator.clipboard.writeText(text);
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  // Plain http: the async Clipboard API is unavailable, the old copy command still works.
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    (ok ? resolve : reject)(new Error('copy failed'));
+  });
 }
 
 window.RemotaBridge = {
@@ -1775,6 +1786,31 @@ function setupTouch() {
   };
   const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
 
+  // Long-press opens the text view, where lines can be selected and copied.
+  let press = null;
+  const cancelPress = () => {
+    clearTimeout(press && press.timer);
+    press = null;
+  };
+  el.addEventListener('touchstart', (e) => {
+    cancelPress();
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      press = { x: t.clientX, y: t.clientY, timer: setTimeout(() => {
+        press = null;
+        lastY = null;
+        haptic(20);
+        openTextView();
+      }, 550) };
+    }
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if (press && (e.touches.length !== 1 || Math.hypot(t.clientX - press.x, t.clientY - press.y) > 10)) cancelPress();
+  }, { passive: true });
+  el.addEventListener('touchend', cancelPress, { passive: true });
+  el.addEventListener('touchcancel', cancelPress, { passive: true });
+
   el.addEventListener('touchstart', (e) => {
     cancelAnimationFrame(momentum);
     if (e.touches.length === 2) {
@@ -2085,7 +2121,11 @@ $('#dlg-menu').addEventListener('close', async () => {
   }
 });
 
-// Native text view: selecting text inside a canvas terminal on a phone is painful, so show it as plain text.
+// Text view: the terminal is a canvas, so text can't be selected there. This shows it as lines:
+// tap a line to start a selection, tap another to extend it, then copy. Long-pressing the
+// terminal opens it at the current screen. Native selection (long-press a word) works here too.
+const textSel = { anchor: null, from: null, to: null, openedAt: 0 };
+
 async function openTextView() {
   let text = null;
   try {
@@ -2101,27 +2141,110 @@ async function openTextView() {
   }
   const view = $('#text-view');
   view.dataset.raw = text.replace(/\s+$/, '');
-  view.textContent = view.dataset.raw;
   $('#text-search').value = '';
   $('#text-count').textContent = '';
+  clearTextSelection();
+  renderTextLines();
+  // The finger that long-pressed the terminal lifts over the new sheet; that tap isn't a selection.
+  textSel.openedAt = Date.now();
   $('#dlg-text').showModal();
   view.scrollTop = view.scrollHeight;
 }
 
-$('#btn-copy-all').addEventListener('click', () => {
+function textLines() {
+  return ($('#text-view').dataset.raw || '').split('\n').map((l) => l.replace(/\s+$/, ''));
+}
+
+// Renders one element per line, with search hits marked.
+function renderTextLines(query = '') {
   const view = $('#text-view');
-  copyText(view.textContent).then(
-    () => toast('コピーしました'),
-    () => {
-      // Clipboard API needs HTTPS; select everything so the native copy menu can be used.
-      const range = document.createRange();
-      range.selectNodeContents(view);
-      const sel = getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      toast('全選択しました。メニューからコピーしてください');
+  const needle = query.toLowerCase();
+  const frag = document.createDocumentFragment();
+  textMatches = [];
+  textLines().forEach((line, n) => {
+    const div = document.createElement('div');
+    div.className = 'tl';
+    div.dataset.n = n;
+    if (!needle) div.textContent = line || ' ';
+    else {
+      const lower = line.toLowerCase();
+      let pos = 0;
+      for (let i = lower.indexOf(needle); i !== -1 && textMatches.length < 2000; i = lower.indexOf(needle, i + needle.length)) {
+        div.append(line.slice(pos, i));
+        const mark = document.createElement('mark');
+        mark.textContent = line.slice(i, i + needle.length);
+        div.append(mark);
+        textMatches.push(mark);
+        pos = i + needle.length;
+      }
+      div.append(line.slice(pos) || (pos ? '' : ' '));
     }
-  );
+    frag.append(div);
+  });
+  view.replaceChildren(frag);
+  paintTextSelection();
+}
+
+function clearTextSelection() {
+  textSel.anchor = textSel.from = textSel.to = null;
+  paintTextSelection();
+}
+
+function paintTextSelection() {
+  const { from, to } = textSel;
+  for (const el of $('#text-view').children) {
+    const n = Number(el.dataset.n);
+    el.classList.toggle('sel', from !== null && n >= from && n <= to);
+  }
+  const count = from === null ? 0 : to - from + 1;
+  $('#btn-copy-all').textContent = count ? `${count}行をコピー` : 'すべてコピー';
+  $('#text-sel-bar').hidden = !count;
+  if (count) $('#text-sel-info').textContent = textSel.anchor !== null && from === to ? '終わりの行をタップすると範囲を選べます' : `${count}行を選択中`;
+}
+
+$('#text-view').addEventListener('click', (e) => {
+  // A native selection (long-press on a word) is left alone.
+  if (String(getSelection()) || Date.now() - textSel.openedAt < 400) return;
+  const line = e.target.closest('.tl');
+  if (!line) return;
+  const n = Number(line.dataset.n);
+  haptic(8);
+  if (textSel.anchor === null) {
+    textSel.anchor = textSel.from = textSel.to = n;
+  } else {
+    textSel.from = Math.min(textSel.anchor, n);
+    textSel.to = Math.max(textSel.anchor, n);
+    textSel.anchor = null;
+  }
+  paintTextSelection();
+});
+
+async function copyFromTextView() {
+  const native = String(getSelection());
+  const lines = textLines();
+  const text = native || (textSel.from !== null ? lines.slice(textSel.from, textSel.to + 1).join('\n') : lines.join('\n'));
+  try {
+    await copyText(text);
+    const n = text.split('\n').length;
+    toast(native ? '選択部分をコピーしました' : `${n}行をコピーしました`);
+    clearTextSelection();
+  } catch {
+    toast('コピーできませんでした');
+  }
+}
+
+$('#btn-copy-all').addEventListener('click', copyFromTextView);
+$('#btn-text-sel-copy').addEventListener('click', copyFromTextView);
+$('#btn-text-sel-clear').addEventListener('click', clearTextSelection);
+// Copying a word picked with the native long-press selection.
+document.addEventListener('selectionchange', () => {
+  const dlg = $('#dlg-text');
+  if (!dlg.open) return;
+  const has = Boolean(String(getSelection()));
+  if (has) {
+    $('#text-sel-bar').hidden = false;
+    $('#text-sel-info').textContent = '選択部分';
+  } else paintTextSelection();
 });
 
 function openHistory() {
@@ -2843,29 +2966,12 @@ let textMatches = [];
 let textIndex = 0;
 
 function runTextSearch() {
-  const view = $('#text-view');
-  const raw = view.dataset.raw || '';
   const q = $('#text-search').value;
-  textMatches = [];
+  renderTextLines(q);
   if (!q) {
-    view.textContent = raw;
     $('#text-count').textContent = '';
     return;
   }
-  const frag = document.createDocumentFragment();
-  const lower = raw.toLowerCase();
-  const needle = q.toLowerCase();
-  let pos = 0;
-  for (let i = lower.indexOf(needle); i !== -1 && textMatches.length < 2000; i = lower.indexOf(needle, i + needle.length)) {
-    frag.append(raw.slice(pos, i));
-    const mark = document.createElement('mark');
-    mark.textContent = raw.slice(i, i + q.length);
-    frag.append(mark);
-    textMatches.push(mark);
-    pos = i + q.length;
-  }
-  frag.append(raw.slice(pos));
-  view.replaceChildren(frag);
   textIndex = textMatches.length - 1;
   focusMatch();
 }
